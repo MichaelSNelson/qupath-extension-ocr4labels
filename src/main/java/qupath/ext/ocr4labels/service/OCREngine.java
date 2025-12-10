@@ -32,6 +32,7 @@ public class OCREngine {
     private boolean initialized = false;
     private String tessdataPath;
     private int currentPageSegMode = ITessAPI.TessPageSegMode.PSM_AUTO;
+    private boolean osdAvailable = false;
 
     /**
      * Creates a new OCR engine instance.
@@ -69,12 +70,21 @@ public class OCREngine {
             tesseract.setDatapath(tessdataPath);
             tesseract.setLanguage(language);
 
-            // Default settings optimized for label images
+            // Check for OSD (orientation/script detection) data file
+            File osdFile = new File(tessdataDir, "osd.traineddata");
+            osdAvailable = osdFile.exists();
+            if (!osdAvailable) {
+                logger.warn("osd.traineddata not found - orientation detection will be disabled. " +
+                        "Download from https://github.com/tesseract-ocr/tessdata_fast/raw/main/osd.traineddata");
+            }
+
+            // Default settings optimized for label images - use Sparse Text mode
             tesseract.setOcrEngineMode(ITessAPI.TessOcrEngineMode.OEM_LSTM_ONLY);
-            tesseract.setPageSegMode(ITessAPI.TessPageSegMode.PSM_AUTO);
+            tesseract.setPageSegMode(ITessAPI.TessPageSegMode.PSM_SPARSE_TEXT);
 
             initialized = true;
-            logger.info("OCR engine initialized with tessdata: {}, language: {}", tessdataPath, language);
+            logger.info("OCR engine initialized with tessdata: {}, language: {}, OSD available: {}",
+                    tessdataPath, language, osdAvailable);
 
         } catch (Exception e) {
             initialized = false;
@@ -296,6 +306,12 @@ public class OCREngine {
      * Detects the orientation of text in the image.
      */
     private OrientationResult detectOrientation(BufferedImage image) {
+        // Skip if OSD data not available
+        if (!osdAvailable) {
+            logger.debug("Skipping orientation detection - osd.traineddata not available");
+            return new OrientationResult(0, 0.0f);
+        }
+
         try {
             // Use Tesseract's OSD mode to detect orientation
             int originalPsm = currentPageSegMode;
@@ -444,6 +460,14 @@ public class OCREngine {
      */
     public String getTessdataPath() {
         return tessdataPath;
+    }
+
+    /**
+     * Checks if orientation/script detection (OSD) is available.
+     * Requires osd.traineddata file in tessdata directory.
+     */
+    public boolean isOsdAvailable() {
+        return osdAvailable;
     }
 
     /**

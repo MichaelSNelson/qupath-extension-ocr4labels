@@ -122,12 +122,12 @@ public class OCRDialog {
         progressIndicator.setMaxSize(24, 24);
         progressIndicator.setVisible(false);
 
-        // PSM Mode dropdown
+        // PSM Mode dropdown - Sparse Text is best default for slide labels
         Label psmLabel = new Label("Mode:");
         psmCombo = new ComboBox<>();
         psmCombo.getItems().addAll(PSMOption.values());
-        psmCombo.setValue(PSMOption.AUTO);
-        psmCombo.setTooltip(new Tooltip("Page Segmentation Mode - try different modes if text isn't detected"));
+        psmCombo.setValue(PSMOption.SPARSE_TEXT);  // Best for scattered text on labels
+        psmCombo.setTooltip(new Tooltip("Page Segmentation Mode - Sparse Text works best for slide labels"));
 
         // Preprocessing options
         invertCheckBox = new CheckBox("Invert");
