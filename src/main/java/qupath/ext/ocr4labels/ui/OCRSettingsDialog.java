@@ -264,21 +264,23 @@ public class OCRSettingsDialog {
                 OCRPreferences.setLanguage(newVal));
 
         // Label image keywords
-        Label keywordsLabel = new Label("Label Keywords:");
+        Label keywordsLabel = new Label("Find Labels:");
         keywordsLabel.setTooltip(new Tooltip(
                 "Keywords to search for when finding label images.\n" +
-                "Different slide scanners use different names for label images."));
+                "Different slide scanners use different names for the label image."));
 
         TextField keywordsField = new TextField(OCRPreferences.getLabelImageKeywords());
         keywordsField.setPrefWidth(200);
         keywordsField.setPromptText("label,barcode");
         keywordsField.setTooltip(new Tooltip(
-                "Comma-separated keywords to search for in image names.\n\n" +
+                "Comma-separated keywords to search for in associated image names.\n\n" +
+                "To see your slide's associated images in QuPath:\n" +
+                "  Open an image, then look at the Image tab (bottom left).\n" +
+                "  Scroll down to 'Associated images' to see available sub-images.\n\n" +
                 "Examples:\n" +
                 "  'label' matches 'label', 'Label', 'slide_label'\n" +
                 "  'barcode' matches 'barcode_image'\n\n" +
-                "Add custom keywords if your scanner uses different names\n" +
-                "(e.g., 'label_image', 'macro', 'overview')."));
+                "Add your scanner's label image name if it differs from the defaults."));
         keywordsField.textProperty().addListener((obs, old, newVal) ->
                 OCRPreferences.setLabelImageKeywords(newVal));
 
