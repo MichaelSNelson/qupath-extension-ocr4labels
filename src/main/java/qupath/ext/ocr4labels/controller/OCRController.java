@@ -70,7 +70,7 @@ public class OCRController {
         }
 
         // Ensure OCR engine is initialized
-        if (!ensureEngineInitialized()) {
+        if (!ensureEngineInitialized(qupath)) {
             return;
         }
 
@@ -105,7 +105,7 @@ public class OCRController {
         }
 
         // Ensure OCR engine is initialized
-        if (!ensureEngineInitialized()) {
+        if (!ensureEngineInitialized(qupath)) {
             return;
         }
 
@@ -196,7 +196,7 @@ public class OCRController {
      *
      * @return true if engine is ready, false otherwise
      */
-    private boolean ensureEngineInitialized() {
+    private boolean ensureEngineInitialized(QuPathGUI qupath) {
         if (engineInitialized && ocrEngine.isInitialized()) {
             return true;
         }
@@ -224,12 +224,40 @@ public class OCRController {
         String language = OCRPreferences.getLanguage();
         File langFile = new File(tessdataDir, language + ".traineddata");
         if (!langFile.exists()) {
-            Dialogs.showErrorMessage("OCR Configuration Error",
-                    "Language file not found: " + langFile.getName() + "\n\n" +
-                            "Please download the language data file from:\n" +
-                            "https://github.com/tesseract-ocr/tessdata\n\n" +
-                            "Place it in: " + tessdataPath);
+            boolean openSettings = Dialogs.showConfirmDialog(
+                    "OCR Setup Required",
+                    "The language data file was not found:\n" +
+                    "  " + langFile.getName() + "\n\n" +
+                    "OCR requires this file to recognize text on labels.\n\n" +
+                    "Would you like to open OCR Settings to download it?\n\n" +
+                    "(Look for the 'Required Downloads' section)");
+
+            if (openSettings) {
+                OCRSettingsDialog.show(qupath);
+            }
             return false;
+        }
+
+        // Check for OSD file if orientation detection is enabled
+        if (OCRPreferences.isDetectOrientation()) {
+            File osdFile = new File(tessdataDir, "osd.traineddata");
+            if (!osdFile.exists()) {
+                boolean proceed = Dialogs.showConfirmDialog(
+                        "Orientation Detection Unavailable",
+                        "The orientation detection file (osd.traineddata) was not found.\n\n" +
+                        "Without this file, rotated or sideways labels may not be read correctly.\n\n" +
+                        "Options:\n" +
+                        "  - Click 'Yes' to continue without orientation detection\n" +
+                        "  - Click 'No' to cancel and download the file from OCR Settings\n\n" +
+                        "Continue anyway?");
+
+                if (!proceed) {
+                    OCRSettingsDialog.show(qupath);
+                    return false;
+                }
+                // Disable orientation detection for this session since file is missing
+                logger.info("Continuing without orientation detection (osd.traineddata not found)");
+            }
         }
 
         // Initialize engine

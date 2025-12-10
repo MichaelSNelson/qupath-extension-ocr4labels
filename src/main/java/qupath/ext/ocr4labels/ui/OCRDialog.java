@@ -127,15 +127,26 @@ public class OCRDialog {
         psmCombo = new ComboBox<>();
         psmCombo.getItems().addAll(PSMOption.values());
         psmCombo.setValue(PSMOption.SPARSE_TEXT);  // Best for scattered text on labels
-        psmCombo.setTooltip(new Tooltip("Page Segmentation Mode - Sparse Text works best for slide labels"));
+        psmCombo.setTooltip(new Tooltip(
+                "How to search for text on the label:\n\n" +
+                "Sparse Text: Best for labels - finds text scattered across the image\n" +
+                "Single Block: For labels with one paragraph of text\n" +
+                "Single Line/Word: For very simple labels\n\n" +
+                "Try different modes if text isn't detected."));
 
         // Preprocessing options
         invertCheckBox = new CheckBox("Invert");
-        invertCheckBox.setTooltip(new Tooltip("Invert image colors (useful for light text on dark background)"));
+        invertCheckBox.setTooltip(new Tooltip(
+                "Flip dark and light colors.\n\n" +
+                "Use this if your label has light/white text on a dark background.\n" +
+                "Most labels have dark text on light background and don't need this."));
 
-        thresholdCheckBox = new CheckBox("Threshold");
+        thresholdCheckBox = new CheckBox("Enhance");
         thresholdCheckBox.setSelected(true);
-        thresholdCheckBox.setTooltip(new Tooltip("Apply adaptive thresholding to improve contrast"));
+        thresholdCheckBox.setTooltip(new Tooltip(
+                "Improve image contrast before reading text.\n\n" +
+                "Helps with faded labels, colored backgrounds, or poor lighting.\n" +
+                "Usually best to leave this enabled."));
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
@@ -145,6 +156,11 @@ public class OCRDialog {
         confSlider.setPrefWidth(100);
         confSlider.setShowTickMarks(true);
         confSlider.setMajorTickUnit(50);
+        confSlider.setTooltip(new Tooltip(
+                "Minimum confidence level for detected text.\n\n" +
+                "Lower = show more text (may include errors)\n" +
+                "Higher = show only confident detections\n\n" +
+                "Try lowering this if text isn't being detected."));
 
         Label confValue = new Label(String.format("%.0f%%", confSlider.getValue()));
         confSlider.valueProperty().addListener((obs, old, newVal) -> {
