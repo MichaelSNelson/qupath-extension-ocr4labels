@@ -31,6 +31,7 @@ public class OCREngine {
     private final ITesseract tesseract;
     private boolean initialized = false;
     private String tessdataPath;
+    private int currentPageSegMode = ITessAPI.TessPageSegMode.PSM_AUTO;
 
     /**
      * Creates a new OCR engine instance.
@@ -189,7 +190,8 @@ public class OCREngine {
      * Applies configuration settings to the Tesseract instance.
      */
     private void applyConfiguration(OCRConfiguration config) {
-        tesseract.setPageSegMode(config.getPageSegMode().getValue());
+        currentPageSegMode = config.getPageSegMode().getValue();
+        tesseract.setPageSegMode(currentPageSegMode);
         tesseract.setOcrEngineMode(config.getEngineMode().getValue());
 
         if (config.getLanguage() != null && !config.getLanguage().isEmpty()) {
@@ -236,13 +238,14 @@ public class OCREngine {
     private OrientationResult detectOrientation(BufferedImage image) {
         try {
             // Use Tesseract's OSD mode to detect orientation
-            int originalPsm = tesseract.getPageSegMode();
+            int originalPsm = currentPageSegMode;
             tesseract.setPageSegMode(ITessAPI.TessPageSegMode.PSM_OSD_ONLY);
 
             String osdResult = tesseract.doOCR(image);
 
             // Restore original PSM
             tesseract.setPageSegMode(originalPsm);
+            currentPageSegMode = originalPsm;
 
             // Parse orientation from OSD output
             // Output contains lines like "Orientation in degrees: 90"

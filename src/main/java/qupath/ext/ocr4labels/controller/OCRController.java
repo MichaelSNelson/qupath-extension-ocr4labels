@@ -258,7 +258,7 @@ public class OCRController {
                         "3. Select that folder in the next dialog");
 
         // Show directory chooser
-        File selectedDir = Dialogs.promptForDirectory("Select Tessdata Directory", null);
+        File selectedDir = Dialogs.promptForDirectory(null);
 
         if (selectedDir != null && selectedDir.isDirectory()) {
             String path = selectedDir.getAbsolutePath();
