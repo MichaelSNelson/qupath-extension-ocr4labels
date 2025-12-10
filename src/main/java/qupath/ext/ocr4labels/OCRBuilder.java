@@ -7,8 +7,8 @@ import qupath.ext.ocr4labels.model.OCRResult;
 import qupath.ext.ocr4labels.preferences.OCRPreferences;
 import qupath.ext.ocr4labels.service.OCREngine;
 import qupath.ext.ocr4labels.utilities.LabelImageUtility;
-import qupath.lib.gui.scripting.QPEx;
 import qupath.lib.images.ImageData;
+import qupath.lib.scripting.QP;
 
 import java.awt.image.BufferedImage;
 import java.util.Collections;
@@ -274,7 +274,7 @@ public class OCRBuilder {
      * @return List of detected text strings
      */
     public List<String> run() {
-        ImageData<?> imageData = QPEx.getImageData();
+        ImageData<?> imageData = QP.getCurrentImageData();
         if (imageData == null) {
             logger.warn("No image data available");
             return Collections.emptyList();
@@ -306,7 +306,7 @@ public class OCRBuilder {
      * @return Detailed OCR result with bounding boxes
      */
     public OCRResult runDetailed() {
-        ImageData<?> imageData = QPEx.getImageData();
+        ImageData<?> imageData = QP.getCurrentImageData();
         if (imageData == null) {
             logger.warn("No image data available");
             return OCRResult.empty();

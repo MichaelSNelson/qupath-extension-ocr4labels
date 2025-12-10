@@ -8,9 +8,9 @@ import qupath.ext.ocr4labels.model.TextBlock;
 import qupath.ext.ocr4labels.preferences.OCRPreferences;
 import qupath.ext.ocr4labels.service.OCREngine;
 import qupath.ext.ocr4labels.utilities.LabelImageUtility;
-import qupath.lib.gui.scripting.QPEx;
 import qupath.lib.images.ImageData;
 import qupath.lib.projects.ProjectImageEntry;
+import qupath.lib.scripting.QP;
 
 import java.awt.image.BufferedImage;
 import java.io.File;
@@ -107,7 +107,7 @@ public class OCR4Labels {
      * @return Detailed OCR result
      */
     public static OCRResult runOCRDetailed(OCRConfiguration config) {
-        ImageData<?> imageData = QPEx.getImageData();
+        ImageData<?> imageData = QP.getCurrentImageData();
         if (imageData == null) {
             logger.warn("No image data available");
             return OCRResult.empty();
@@ -168,8 +168,8 @@ public class OCR4Labels {
             return;
         }
 
-        var project = QPEx.getProject();
-        ImageData<?> imageData = QPEx.getImageData();
+        var project = QP.getProject();
+        ImageData<?> imageData = QP.getCurrentImageData();
 
         if (project == null || imageData == null) {
             logger.warn("Cannot set metadata - no project or image data");
@@ -179,7 +179,7 @@ public class OCR4Labels {
         // Find the project entry for the current image
         ProjectImageEntry<?> entry = findCurrentEntry(project, imageData);
         if (entry != null) {
-            entry.putMetadataValue(key, value != null ? value : "");
+            entry.getMetadata().put(key, value != null ? value : "");
             logger.info("Set metadata: {} = {}", key, value);
         } else {
             logger.warn("Could not find project entry for current image");
@@ -242,7 +242,7 @@ public class OCR4Labels {
      * @return true if a label image is available
      */
     public static boolean hasLabelImage() {
-        ImageData<?> imageData = QPEx.getImageData();
+        ImageData<?> imageData = QP.getCurrentImageData();
         if (imageData == null) {
             return false;
         }
@@ -255,7 +255,7 @@ public class OCR4Labels {
      * @return The label image, or null if not available
      */
     public static BufferedImage getLabelImage() {
-        ImageData<?> imageData = QPEx.getImageData();
+        ImageData<?> imageData = QP.getCurrentImageData();
         if (imageData == null) {
             return null;
         }
@@ -297,7 +297,7 @@ public class OCR4Labels {
      * @return List of associated image names (e.g., "label", "macro", "thumbnail")
      */
     public static List<String> getAssociatedImageNames() {
-        ImageData<?> imageData = QPEx.getImageData();
+        ImageData<?> imageData = QP.getCurrentImageData();
         if (imageData == null) {
             return Collections.emptyList();
         }
@@ -310,7 +310,7 @@ public class OCR4Labels {
      * @return The image name, or empty string if not available
      */
     public static String getCurrentImageName() {
-        ImageData<?> imageData = QPEx.getImageData();
+        ImageData<?> imageData = QP.getCurrentImageData();
         if (imageData == null) {
             return "";
         }
@@ -391,8 +391,9 @@ public class OCR4Labels {
             return null;
         }
 
-        String currentUri = server.getURIs().isEmpty() ? null :
-                server.getURIs().iterator().next().toString();
+        var serverUris = server.getURIs();
+        String currentUri = serverUris.isEmpty() ? null :
+                serverUris.iterator().next().toString();
 
         if (currentUri == null) {
             return null;
@@ -400,8 +401,9 @@ public class OCR4Labels {
 
         for (var entry : project.getImageList()) {
             try {
-                String entryUri = entry.getServerURIs().isEmpty() ? null :
-                        entry.getServerURIs().iterator().next().toString();
+                var entryUris = entry.getURIs();
+                String entryUri = entryUris.isEmpty() ? null :
+                        entryUris.iterator().next().toString();
                 if (currentUri.equals(entryUri)) {
                     return entry;
                 }
