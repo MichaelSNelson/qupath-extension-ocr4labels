@@ -26,8 +26,9 @@ public class OCRPreferences {
     private static final boolean DEFAULT_AUTO_ROTATE = true;
     private static final boolean DEFAULT_ENHANCE_CONTRAST = true;
     private static final boolean DEFAULT_DETECT_ORIENTATION = true;
-    private static final int DEFAULT_PAGE_SEG_MODE = 3; // PSM_AUTO
+    private static final int DEFAULT_PAGE_SEG_MODE = 11; // PSM_SPARSE_TEXT (best for labels)
     private static final String DEFAULT_METADATA_PREFIX = "OCR_";
+    private static final String DEFAULT_LABEL_IMAGE_KEYWORDS = "label,barcode";
 
     // Properties
     private static StringProperty languageProperty;
@@ -38,6 +39,7 @@ public class OCRPreferences {
     private static BooleanProperty detectOrientationProperty;
     private static IntegerProperty pageSegModeProperty;
     private static StringProperty metadataPrefixProperty;
+    private static StringProperty labelImageKeywordsProperty;
 
     // Window size properties for remembering dialog sizes
     private static DoubleProperty dialogWidthProperty;
@@ -78,6 +80,9 @@ public class OCRPreferences {
 
         metadataPrefixProperty = PathPrefs.createPersistentPreference(
                 PREFIX + "metadataPrefix", DEFAULT_METADATA_PREFIX);
+
+        labelImageKeywordsProperty = PathPrefs.createPersistentPreference(
+                PREFIX + "labelImageKeywords", DEFAULT_LABEL_IMAGE_KEYWORDS);
 
         // Dialog size properties
         dialogWidthProperty = PathPrefs.createPersistentPreference(
@@ -213,6 +218,20 @@ public class OCRPreferences {
         }
     }
 
+    public static String getLabelImageKeywords() {
+        return labelImageKeywordsProperty != null ? labelImageKeywordsProperty.get() : DEFAULT_LABEL_IMAGE_KEYWORDS;
+    }
+
+    public static void setLabelImageKeywords(String keywords) {
+        if (labelImageKeywordsProperty != null) {
+            labelImageKeywordsProperty.set(keywords);
+        }
+    }
+
+    public static StringProperty labelImageKeywordsProperty() {
+        return labelImageKeywordsProperty;
+    }
+
     public static double getDialogWidth() {
         return dialogWidthProperty != null ? dialogWidthProperty.get() : 1000.0;
     }
@@ -245,6 +264,7 @@ public class OCRPreferences {
         setDetectOrientation(DEFAULT_DETECT_ORIENTATION);
         setPageSegMode(DEFAULT_PAGE_SEG_MODE);
         setMetadataPrefix(DEFAULT_METADATA_PREFIX);
+        setLabelImageKeywords(DEFAULT_LABEL_IMAGE_KEYWORDS);
         logger.info("OCR preferences reset to defaults");
     }
 }

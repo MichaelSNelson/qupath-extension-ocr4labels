@@ -629,7 +629,7 @@ public class OCRDialog {
      */
     private static class MetadataKeyCell extends TextFieldTableCell<OCRFieldEntry, String> {
         public MetadataKeyCell() {
-            super();
+            super(new javafx.util.converter.DefaultStringConverter());
         }
 
         @Override

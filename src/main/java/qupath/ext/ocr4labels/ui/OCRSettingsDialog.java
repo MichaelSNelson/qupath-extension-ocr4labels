@@ -263,11 +263,36 @@ public class OCRSettingsDialog {
         languageField.textProperty().addListener((obs, old, newVal) ->
                 OCRPreferences.setLanguage(newVal));
 
+        // Label image keywords
+        Label keywordsLabel = new Label("Label Keywords:");
+        keywordsLabel.setTooltip(new Tooltip(
+                "Keywords to search for when finding label images.\n" +
+                "Different slide scanners use different names for label images."));
+
+        TextField keywordsField = new TextField(OCRPreferences.getLabelImageKeywords());
+        keywordsField.setPrefWidth(200);
+        keywordsField.setPromptText("label,barcode");
+        keywordsField.setTooltip(new Tooltip(
+                "Comma-separated keywords to search for in image names.\n\n" +
+                "Examples:\n" +
+                "  'label' matches 'label', 'Label', 'slide_label'\n" +
+                "  'barcode' matches 'barcode_image'\n\n" +
+                "Add custom keywords if your scanner uses different names\n" +
+                "(e.g., 'label_image', 'macro', 'overview')."));
+        keywordsField.textProperty().addListener((obs, old, newVal) ->
+                OCRPreferences.setLabelImageKeywords(newVal));
+
+        Label keywordsHint = new Label("Comma-separated list (e.g., label,barcode,label_image)");
+        keywordsHint.setStyle("-fx-text-fill: gray; -fx-font-size: 10px;");
+
         grid.add(pathLabel, 0, 0);
         grid.add(pathField, 1, 0);
         grid.add(browseButton, 2, 0);
         grid.add(languageLabel, 0, 1);
         grid.add(languageField, 1, 1);
+        grid.add(keywordsLabel, 0, 2);
+        grid.add(keywordsField, 1, 2);
+        grid.add(keywordsHint, 1, 3);
 
         GridPane.setHgrow(pathField, Priority.ALWAYS);
         pane.setContent(grid);

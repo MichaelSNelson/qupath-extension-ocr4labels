@@ -2,37 +2,37 @@ package qupath.ext.ocr4labels.utilities;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import qupath.ext.ocr4labels.preferences.OCRPreferences;
 import qupath.lib.images.ImageData;
 import qupath.lib.images.servers.ImageServer;
 
 import java.awt.image.BufferedImage;
+import java.util.Arrays;
 import java.util.Collection;
 
 /**
  * Utility class for retrieving and working with label images from whole slide images.
  * Handles different naming conventions used by various slide scanner vendors.
+ * Users can customize the keywords to search for in OCR Settings.
  */
 public class LabelImageUtility {
 
     private static final Logger logger = LoggerFactory.getLogger(LabelImageUtility.class);
 
     /**
-     * Standard label image names across different vendors.
-     * Order matters - checked in sequence.
+     * Gets the current list of keywords to search for in associated image names.
+     * These are configurable through OCR Settings.
      */
-    private static final String[] LABEL_IMAGE_NAMES = {
-            "label",        // Standard Bio-Formats convention
-            "Label",        // Case variation
-            "LABEL",        // All caps variation
-    };
-
-    /**
-     * Keywords to search for in associated image names.
-     */
-    private static final String[] LABEL_KEYWORDS = {
-            "label",
-            "barcode"
-    };
+    private static String[] getLabelKeywords() {
+        String keywords = OCRPreferences.getLabelImageKeywords();
+        if (keywords == null || keywords.isEmpty()) {
+            return new String[]{"label", "barcode"};
+        }
+        return Arrays.stream(keywords.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .toArray(String[]::new);
+    }
 
     private LabelImageUtility() {
         // Utility class - prevent instantiation
@@ -61,18 +61,14 @@ public class LabelImageUtility {
                 return false;
             }
 
-            // Check for standard label names
-            for (String labelName : LABEL_IMAGE_NAMES) {
-                if (associatedImages.contains(labelName)) {
-                    return true;
-                }
-            }
-
             // Check for names containing label keywords (case-insensitive)
-            String lowerNames = associatedImages.toString().toLowerCase();
-            for (String keyword : LABEL_KEYWORDS) {
-                if (lowerNames.contains(keyword)) {
-                    return true;
+            String[] keywords = getLabelKeywords();
+            for (String imageName : associatedImages) {
+                String lowerName = imageName.toLowerCase();
+                for (String keyword : keywords) {
+                    if (lowerName.contains(keyword.toLowerCase())) {
+                        return true;
+                    }
                 }
             }
 
@@ -112,22 +108,12 @@ public class LabelImageUtility {
 
             logger.debug("Available associated images: {}", associatedImages);
 
-            // Try standard label names in order
-            for (String labelName : LABEL_IMAGE_NAMES) {
-                if (associatedImages.contains(labelName)) {
-                    logger.info("Found label image with name: {}", labelName);
-                    BufferedImage img = retrieveImageByName(server, labelName);
-                    if (img != null) {
-                        return img;
-                    }
-                }
-            }
-
             // Try finding any image containing label keywords (case-insensitive)
+            String[] keywords = getLabelKeywords();
             for (String imageName : associatedImages) {
                 String lowerName = imageName.toLowerCase();
-                for (String keyword : LABEL_KEYWORDS) {
-                    if (lowerName.contains(keyword)) {
+                for (String keyword : keywords) {
+                    if (lowerName.contains(keyword.toLowerCase())) {
                         logger.info("Found label image by keyword '{}': {}", keyword, imageName);
                         BufferedImage img = retrieveImageByName(server, imageName);
                         if (img != null) {
@@ -194,18 +180,12 @@ public class LabelImageUtility {
                 return null;
             }
 
-            // Try standard names first
-            for (String labelName : LABEL_IMAGE_NAMES) {
-                if (associatedImages.contains(labelName)) {
-                    return labelName;
-                }
-            }
-
             // Try finding by keyword
+            String[] keywords = getLabelKeywords();
             for (String imageName : associatedImages) {
                 String lowerName = imageName.toLowerCase();
-                for (String keyword : LABEL_KEYWORDS) {
-                    if (lowerName.contains(keyword)) {
+                for (String keyword : keywords) {
+                    if (lowerName.contains(keyword.toLowerCase())) {
                         return imageName;
                     }
                 }
