@@ -1,6 +1,7 @@
 package qupath.ext.ocr4labels.controller;
 
 import javafx.application.Platform;
+import javafx.stage.DirectoryChooser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qupath.ext.ocr4labels.model.OCRConfiguration;
@@ -257,8 +258,10 @@ public class OCRController {
                         "2. Place the .traineddata file(s) in a 'tessdata' folder\n" +
                         "3. Select that folder in the next dialog");
 
-        // Show directory chooser
-        File selectedDir = Dialogs.promptForDirectory(null);
+        // Show directory chooser using JavaFX DirectoryChooser
+        DirectoryChooser chooser = new DirectoryChooser();
+        chooser.setTitle("Select Tessdata Directory");
+        File selectedDir = chooser.showDialog(null);
 
         if (selectedDir != null && selectedDir.isDirectory()) {
             String path = selectedDir.getAbsolutePath();
