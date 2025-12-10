@@ -116,9 +116,6 @@ public class OCRDialog {
         Button runOCRButton = new Button(resources.getString("button.runOCR"));
         runOCRButton.setOnAction(e -> runOCR());
 
-        Button refreshButton = new Button(resources.getString("button.refresh"));
-        refreshButton.setOnAction(e -> refreshImage());
-
         progressIndicator = new ProgressIndicator();
         progressIndicator.setMaxSize(24, 24);
         progressIndicator.setVisible(false);
@@ -135,23 +132,7 @@ public class OCRDialog {
                 "Single Line/Word: For very simple labels\n\n" +
                 "Try different modes if text isn't detected."));
 
-        // Preprocessing options
-        invertCheckBox = new CheckBox("Invert");
-        invertCheckBox.setTooltip(new Tooltip(
-                "Flip dark and light colors.\n\n" +
-                "Use this if your label has light/white text on a dark background.\n" +
-                "Most labels have dark text on light background and don't need this."));
-
-        thresholdCheckBox = new CheckBox("Enhance");
-        thresholdCheckBox.setSelected(true);
-        thresholdCheckBox.setTooltip(new Tooltip(
-                "Improve image contrast before reading text.\n\n" +
-                "Helps with faded labels, colored backgrounds, or poor lighting.\n" +
-                "Usually best to leave this enabled."));
-
-        Region spacer = new Region();
-        HBox.setHgrow(spacer, Priority.ALWAYS);
-
+        // Confidence slider - important setting, placed prominently
         Label confLabel = new Label("Min Conf:");
         confSlider = new Slider(0, 100, OCRPreferences.getMinConfidence() * 100);
         confSlider.setPrefWidth(100);
@@ -168,20 +149,33 @@ public class OCRDialog {
             confValue.setText(String.format("%.0f%%", newVal.doubleValue()));
         });
 
+        // Preprocessing options
+        invertCheckBox = new CheckBox("Invert");
+        invertCheckBox.setTooltip(new Tooltip(
+                "Flip dark and light colors.\n\n" +
+                "Use this if your label has light/white text on a dark background.\n" +
+                "Most labels have dark text on light background and don't need this."));
+
+        thresholdCheckBox = new CheckBox("Enhance");
+        thresholdCheckBox.setSelected(true);
+        thresholdCheckBox.setTooltip(new Tooltip(
+                "Improve image contrast before reading text.\n\n" +
+                "Helps with faded labels, colored backgrounds, or poor lighting.\n" +
+                "Usually best to leave this enabled."));
+
         return new ToolBar(
                 runOCRButton,
-                refreshButton,
                 progressIndicator,
                 new Separator(),
                 psmLabel,
                 psmCombo,
                 new Separator(),
-                invertCheckBox,
-                thresholdCheckBox,
-                spacer,
                 confLabel,
                 confSlider,
-                confValue
+                confValue,
+                new Separator(),
+                invertCheckBox,
+                thresholdCheckBox
         );
     }
 
@@ -241,12 +235,16 @@ public class OCRDialog {
         Button fitButton = new Button("Fit");
         fitButton.setOnAction(e -> {
             imageView.fitWidthProperty().bind(scrollPane.widthProperty().subtract(20));
+            // Redraw bounding boxes after view change
+            Platform.runLater(this::drawBoundingBoxes);
         });
 
         Button actualButton = new Button("100%");
         actualButton.setOnAction(e -> {
             imageView.fitWidthProperty().unbind();
             imageView.setFitWidth(labelImage.getWidth());
+            // Redraw bounding boxes after view change
+            Platform.runLater(this::drawBoundingBoxes);
         });
 
         zoomControls.getChildren().addAll(fitButton, actualButton);
@@ -539,12 +537,6 @@ public class OCRDialog {
         }
 
         metadataPreview.setText(sb.toString());
-    }
-
-    private void refreshImage() {
-        Image fxImage = SwingFXUtils.toFXImage(labelImage, null);
-        imageView.setImage(fxImage);
-        drawBoundingBoxes();
     }
 
     private void addManualField() {
