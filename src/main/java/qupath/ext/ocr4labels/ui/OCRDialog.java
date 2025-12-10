@@ -71,6 +71,14 @@ public class OCRDialog {
     private CheckBox thresholdCheckBox;
     private Slider confSlider;
 
+    // Region selection state
+    private boolean regionSelectionMode = false;
+    private double selectionStartX, selectionStartY;
+    private double selectionEndX, selectionEndY;
+    private boolean hasSelection = false;
+    private ToggleButton selectRegionButton;
+    private Button scanRegionButton;
+
     /**
      * Shows the OCR dialog for a label image.
      */
@@ -163,6 +171,31 @@ public class OCRDialog {
                 "Helps with faded labels, colored backgrounds, or poor lighting.\n" +
                 "Usually best to leave this enabled."));
 
+        // Region selection tools
+        selectRegionButton = new ToggleButton("Select Region");
+        selectRegionButton.setTooltip(new Tooltip(
+                "Draw a rectangle on the image to target a specific area.\n\n" +
+                "Use this when text isn't being detected - select the area\n" +
+                "containing the text, then click 'Scan Region' to analyze\n" +
+                "just that area with very sensitive settings."));
+        selectRegionButton.setOnAction(e -> {
+            regionSelectionMode = selectRegionButton.isSelected();
+            if (!regionSelectionMode) {
+                // Clear selection when exiting selection mode
+                hasSelection = false;
+                drawBoundingBoxes();
+            }
+            updateScanRegionButton();
+        });
+
+        scanRegionButton = new Button("Scan Region");
+        scanRegionButton.setDisable(true);
+        scanRegionButton.setTooltip(new Tooltip(
+                "Run OCR on the selected region with very low confidence threshold.\n\n" +
+                "This is useful for difficult-to-read text that isn't being\n" +
+                "detected with normal settings."));
+        scanRegionButton.setOnAction(e -> scanSelectedRegion());
+
         return new ToolBar(
                 runOCRButton,
                 progressIndicator,
@@ -175,7 +208,10 @@ public class OCRDialog {
                 confValue,
                 new Separator(),
                 invertCheckBox,
-                thresholdCheckBox
+                thresholdCheckBox,
+                new Separator(),
+                selectRegionButton,
+                scanRegionButton
         );
     }
 
@@ -211,8 +247,44 @@ public class OCRDialog {
         Image fxImage = SwingFXUtils.toFXImage(labelImage, null);
         imageView.setImage(fxImage);
 
-        // Overlay canvas for bounding boxes
+        // Overlay canvas for bounding boxes and selection
         overlayCanvas = new Canvas();
+
+        // Mouse handlers for region selection
+        overlayCanvas.setOnMousePressed(e -> {
+            if (regionSelectionMode) {
+                selectionStartX = e.getX();
+                selectionStartY = e.getY();
+                selectionEndX = e.getX();
+                selectionEndY = e.getY();
+                hasSelection = false;
+                drawBoundingBoxes();
+            }
+        });
+
+        overlayCanvas.setOnMouseDragged(e -> {
+            if (regionSelectionMode) {
+                selectionEndX = e.getX();
+                selectionEndY = e.getY();
+                hasSelection = true;
+                drawBoundingBoxes();
+            }
+        });
+
+        overlayCanvas.setOnMouseReleased(e -> {
+            if (regionSelectionMode && hasSelection) {
+                selectionEndX = e.getX();
+                selectionEndY = e.getY();
+                // Ensure we have a valid selection (not just a click)
+                double width = Math.abs(selectionEndX - selectionStartX);
+                double height = Math.abs(selectionEndY - selectionStartY);
+                if (width < 5 || height < 5) {
+                    hasSelection = false;
+                }
+                drawBoundingBoxes();
+                updateScanRegionButton();
+            }
+        });
 
         imageStack.getChildren().addAll(imageView, overlayCanvas);
 
@@ -479,6 +551,11 @@ public class OCRDialog {
         GraphicsContext gc = overlayCanvas.getGraphicsContext2D();
         gc.clearRect(0, 0, overlayCanvas.getWidth(), overlayCanvas.getHeight());
 
+        // Draw selection rectangle if in selection mode
+        if (hasSelection || regionSelectionMode) {
+            drawSelectionRectangle(gc);
+        }
+
         if (fieldEntries.isEmpty()) return;
 
         // Calculate scale factor
@@ -515,6 +592,201 @@ public class OCRDialog {
 
             index++;
         }
+    }
+
+    /**
+     * Draws the selection rectangle on the canvas.
+     */
+    private void drawSelectionRectangle(GraphicsContext gc) {
+        if (!hasSelection && !regionSelectionMode) return;
+
+        double x = Math.min(selectionStartX, selectionEndX);
+        double y = Math.min(selectionStartY, selectionEndY);
+        double w = Math.abs(selectionEndX - selectionStartX);
+        double h = Math.abs(selectionEndY - selectionStartY);
+
+        if (w < 2 || h < 2) return;
+
+        // Semi-transparent fill
+        gc.setFill(Color.rgb(0, 120, 255, 0.2));
+        gc.fillRect(x, y, w, h);
+
+        // Dashed border
+        gc.setStroke(Color.rgb(0, 120, 255));
+        gc.setLineWidth(2);
+        gc.setLineDashes(5, 5);
+        gc.strokeRect(x, y, w, h);
+        gc.setLineDashes(null);
+
+        // Label
+        gc.setFill(Color.rgb(0, 120, 255, 0.9));
+        gc.fillRect(x, y - 18, 80, 18);
+        gc.setFill(Color.WHITE);
+        gc.fillText("Selection", x + 4, y - 4);
+    }
+
+    /**
+     * Updates the enabled state of the Scan Region button.
+     */
+    private void updateScanRegionButton() {
+        scanRegionButton.setDisable(!hasSelection);
+    }
+
+    /**
+     * Runs OCR on the selected region with very low confidence threshold.
+     */
+    private void scanSelectedRegion() {
+        if (!hasSelection) {
+            Dialogs.showWarningNotification("No Selection",
+                    "Please draw a rectangle on the image first.");
+            return;
+        }
+
+        // Calculate scale factor to convert canvas coords to image coords
+        double scaleX = imageView.getBoundsInLocal().getWidth() / labelImage.getWidth();
+        double scaleY = imageView.getBoundsInLocal().getHeight() / labelImage.getHeight();
+        double scale = Math.min(scaleX, scaleY);
+
+        // Convert selection to image coordinates
+        int imgX = (int) Math.max(0, Math.min(selectionStartX, selectionEndX) / scale);
+        int imgY = (int) Math.max(0, Math.min(selectionStartY, selectionEndY) / scale);
+        int imgW = (int) Math.min(labelImage.getWidth() - imgX, Math.abs(selectionEndX - selectionStartX) / scale);
+        int imgH = (int) Math.min(labelImage.getHeight() - imgY, Math.abs(selectionEndY - selectionStartY) / scale);
+
+        if (imgW < 5 || imgH < 5) {
+            Dialogs.showWarningNotification("Selection Too Small",
+                    "Please draw a larger selection area.");
+            return;
+        }
+
+        logger.info("Scanning region: x={}, y={}, w={}, h={}", imgX, imgY, imgW, imgH);
+
+        // Extract the region from the image
+        BufferedImage regionImage = labelImage.getSubimage(imgX, imgY, imgW, imgH);
+
+        // Apply inversion if checkbox selected
+        if (invertCheckBox.isSelected()) {
+            regionImage = invertImage(regionImage);
+        }
+
+        progressIndicator.setVisible(true);
+
+        // Use very aggressive settings for the region scan
+        OCRConfiguration config = OCRConfiguration.builder()
+                .pageSegMode(OCRConfiguration.PageSegMode.SPARSE_TEXT)
+                .language(OCRPreferences.getLanguage())
+                .minConfidence(0.1)  // Very low confidence for difficult text
+                .autoRotate(OCRPreferences.isAutoRotate())
+                .detectOrientation(OCRPreferences.isDetectOrientation())
+                .enhanceContrast(thresholdCheckBox.isSelected())
+                .enablePreprocessing(true)
+                .build();
+
+        // Store the region offset for bounding box adjustment
+        final int offsetX = imgX;
+        final int offsetY = imgY;
+
+        OCRController.getInstance().performOCRAsync(regionImage, config)
+                .thenAccept(result -> Platform.runLater(() -> {
+                    progressIndicator.setVisible(false);
+
+                    if (result.getBlockCount() == 0) {
+                        // Try with different modes
+                        Dialogs.showInfoNotification("Region Scan Complete",
+                                "No text detected in the selected region.\n\n" +
+                                "Try:\n" +
+                                "- Selecting a tighter area around the text\n" +
+                                "- Toggling the Invert checkbox\n" +
+                                "- Making sure the text is clearly visible");
+                    } else {
+                        // Add detected fields with adjusted bounding boxes
+                        addRegionResults(result, offsetX, offsetY);
+                        Dialogs.showInfoNotification("Region Scan Complete",
+                                String.format("Found %d text blocks in the selected region.",
+                                        result.getBlockCount()));
+                    }
+
+                    // Clear selection mode
+                    selectRegionButton.setSelected(false);
+                    regionSelectionMode = false;
+                    hasSelection = false;
+                    drawBoundingBoxes();
+                    updateScanRegionButton();
+                }))
+                .exceptionally(ex -> {
+                    Platform.runLater(() -> {
+                        progressIndicator.setVisible(false);
+                        Dialogs.showErrorMessage("Region Scan Failed", ex.getMessage());
+                    });
+                    return null;
+                });
+    }
+
+    /**
+     * Adds OCR results from a region scan, adjusting bounding boxes for the offset.
+     */
+    private void addRegionResults(OCRResult result, int offsetX, int offsetY) {
+        String prefix = OCRPreferences.getMetadataPrefix();
+        int startIndex = fieldEntries.size();
+
+        for (TextBlock block : result.getTextBlocks()) {
+            if (block.getType() == TextBlock.BlockType.LINE && !block.isEmpty()) {
+                String suggestedKey = prefix + "region_" + startIndex;
+
+                // Adjust bounding box for the region offset
+                BoundingBox originalBox = block.getBoundingBox();
+                BoundingBox adjustedBox = null;
+                if (originalBox != null) {
+                    adjustedBox = new BoundingBox(
+                            originalBox.getX() + offsetX,
+                            originalBox.getY() + offsetY,
+                            originalBox.getWidth(),
+                            originalBox.getHeight()
+                    );
+                }
+
+                OCRFieldEntry entry = new OCRFieldEntry(
+                        block.getText(),
+                        suggestedKey,
+                        block.getConfidence(),
+                        adjustedBox
+                );
+                fieldEntries.add(entry);
+                startIndex++;
+            }
+        }
+
+        // If no lines, try words
+        if (startIndex == fieldEntries.size()) {
+            for (TextBlock block : result.getTextBlocks()) {
+                if (block.getType() == TextBlock.BlockType.WORD && !block.isEmpty()) {
+                    String suggestedKey = prefix + "region_" + startIndex;
+
+                    BoundingBox originalBox = block.getBoundingBox();
+                    BoundingBox adjustedBox = null;
+                    if (originalBox != null) {
+                        adjustedBox = new BoundingBox(
+                                originalBox.getX() + offsetX,
+                                originalBox.getY() + offsetY,
+                                originalBox.getWidth(),
+                                originalBox.getHeight()
+                        );
+                    }
+
+                    OCRFieldEntry entry = new OCRFieldEntry(
+                            block.getText(),
+                            suggestedKey,
+                            block.getConfidence(),
+                            adjustedBox
+                    );
+                    fieldEntries.add(entry);
+                    startIndex++;
+                }
+            }
+        }
+
+        updateMetadataPreview();
+        drawBoundingBoxes();
     }
 
     private void updateCanvasSize() {
