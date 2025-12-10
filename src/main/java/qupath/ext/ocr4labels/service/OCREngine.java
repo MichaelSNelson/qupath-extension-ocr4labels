@@ -215,16 +215,76 @@ public class OCREngine {
             result = grayImage;
         }
 
-        // Enhance contrast if enabled
+        // Enhance contrast if enabled - use adaptive thresholding
         if (config.isEnhanceContrast()) {
-            result = enhanceContrast(result);
+            result = applyAdaptiveThreshold(result);
         }
 
         return result;
     }
 
     /**
+     * Applies adaptive thresholding to improve text contrast.
+     * This is much better than simple contrast enhancement for OCR.
+     */
+    private BufferedImage applyAdaptiveThreshold(BufferedImage image) {
+        int width = image.getWidth();
+        int height = image.getHeight();
+
+        // Use a block size relative to image size, minimum 15
+        int blockSize = Math.max(15, Math.min(width, height) / 20);
+        if (blockSize % 2 == 0) blockSize++; // Must be odd
+
+        BufferedImage result = new BufferedImage(width, height, BufferedImage.TYPE_BYTE_GRAY);
+
+        // Get pixel data
+        int[] pixels = new int[width * height];
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int rgb = image.getRGB(x, y);
+                int gray = (rgb >> 16) & 0xFF; // Already grayscale, just get one channel
+                pixels[y * width + x] = gray;
+            }
+        }
+
+        // Apply adaptive threshold using mean of local neighborhood
+        int halfBlock = blockSize / 2;
+        int offset = 10; // Threshold offset - adjust sensitivity
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                // Calculate local mean
+                int sum = 0;
+                int count = 0;
+
+                for (int dy = -halfBlock; dy <= halfBlock; dy++) {
+                    for (int dx = -halfBlock; dx <= halfBlock; dx++) {
+                        int nx = x + dx;
+                        int ny = y + dy;
+
+                        if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                            sum += pixels[ny * width + nx];
+                            count++;
+                        }
+                    }
+                }
+
+                int localMean = sum / count;
+                int pixelValue = pixels[y * width + x];
+
+                // Apply threshold: if pixel is darker than local mean minus offset, make it black
+                int outputValue = (pixelValue < localMean - offset) ? 0 : 255;
+                result.setRGB(x, y, (outputValue << 16) | (outputValue << 8) | outputValue);
+            }
+        }
+
+        logger.debug("Applied adaptive threshold with block size {}", blockSize);
+        return result;
+    }
+
+    /**
      * Enhances image contrast using a simple rescale operation.
+     * Kept as alternative to adaptive thresholding.
      */
     private BufferedImage enhanceContrast(BufferedImage image) {
         // Scale factor of 1.2 increases contrast, offset of 0 maintains brightness

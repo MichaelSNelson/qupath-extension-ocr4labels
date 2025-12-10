@@ -64,6 +64,12 @@ public class OCRDialog {
     private OCRResult currentResult;
     private int selectedIndex = -1;
 
+    // Toolbar controls for OCR settings
+    private ComboBox<PSMOption> psmCombo;
+    private CheckBox invertCheckBox;
+    private CheckBox thresholdCheckBox;
+    private Slider confSlider;
+
     /**
      * Shows the OCR dialog for a label image.
      */
@@ -116,12 +122,27 @@ public class OCRDialog {
         progressIndicator.setMaxSize(24, 24);
         progressIndicator.setVisible(false);
 
+        // PSM Mode dropdown
+        Label psmLabel = new Label("Mode:");
+        psmCombo = new ComboBox<>();
+        psmCombo.getItems().addAll(PSMOption.values());
+        psmCombo.setValue(PSMOption.AUTO);
+        psmCombo.setTooltip(new Tooltip("Page Segmentation Mode - try different modes if text isn't detected"));
+
+        // Preprocessing options
+        invertCheckBox = new CheckBox("Invert");
+        invertCheckBox.setTooltip(new Tooltip("Invert image colors (useful for light text on dark background)"));
+
+        thresholdCheckBox = new CheckBox("Threshold");
+        thresholdCheckBox.setSelected(true);
+        thresholdCheckBox.setTooltip(new Tooltip("Apply adaptive thresholding to improve contrast"));
+
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
-        Label confLabel = new Label("Min Confidence:");
-        Slider confSlider = new Slider(0, 100, OCRPreferences.getMinConfidence() * 100);
-        confSlider.setPrefWidth(120);
+        Label confLabel = new Label("Min Conf:");
+        confSlider = new Slider(0, 100, OCRPreferences.getMinConfidence() * 100);
+        confSlider.setPrefWidth(100);
         confSlider.setShowTickMarks(true);
         confSlider.setMajorTickUnit(50);
 
@@ -134,6 +155,12 @@ public class OCRDialog {
                 runOCRButton,
                 refreshButton,
                 progressIndicator,
+                new Separator(),
+                psmLabel,
+                psmCombo,
+                new Separator(),
+                invertCheckBox,
+                thresholdCheckBox,
                 spacer,
                 confLabel,
                 confSlider,
@@ -317,18 +344,34 @@ public class OCRDialog {
     private void runOCR() {
         progressIndicator.setVisible(true);
 
-        OCRConfiguration config = OCRController.getInstance().getCurrentConfiguration();
+        // Build configuration from toolbar settings
+        PSMOption selectedPSM = psmCombo.getValue();
+        OCRConfiguration.PageSegMode psm = selectedPSM != null ? selectedPSM.getMode() : OCRConfiguration.PageSegMode.AUTO;
 
-        OCRController.getInstance().performOCRAsync(labelImage, config)
+        OCRConfiguration config = OCRConfiguration.builder()
+                .pageSegMode(psm)
+                .language(OCRPreferences.getLanguage())
+                .minConfidence(confSlider.getValue() / 100.0)
+                .autoRotate(OCRPreferences.isAutoRotate())
+                .detectOrientation(OCRPreferences.isDetectOrientation())
+                .enhanceContrast(thresholdCheckBox.isSelected())
+                .enablePreprocessing(true)
+                .build();
+
+        // Preprocess the image based on checkbox settings
+        BufferedImage imageToProcess = preprocessForOCR(labelImage);
+
+        OCRController.getInstance().performOCRAsync(imageToProcess, config)
                 .thenAccept(result -> Platform.runLater(() -> {
                     currentResult = result;
                     populateFieldsTable(result);
                     drawBoundingBoxes();
                     progressIndicator.setVisible(false);
 
+                    String modeInfo = selectedPSM != null ? selectedPSM.toString() : "Auto";
                     Dialogs.showInfoNotification("OCR Complete",
-                            String.format("Detected %d text blocks in %dms",
-                                    result.getBlockCount(), result.getProcessingTimeMs()));
+                            String.format("Detected %d text blocks in %dms (Mode: %s)",
+                                    result.getBlockCount(), result.getProcessingTimeMs(), modeInfo));
                 }))
                 .exceptionally(ex -> {
                     Platform.runLater(() -> {
@@ -337,6 +380,40 @@ public class OCRDialog {
                     });
                     return null;
                 });
+    }
+
+    /**
+     * Preprocesses the image based on dialog settings.
+     */
+    private BufferedImage preprocessForOCR(BufferedImage source) {
+        BufferedImage result = source;
+
+        // Invert if checkbox selected
+        if (invertCheckBox.isSelected()) {
+            result = invertImage(result);
+        }
+
+        return result;
+    }
+
+    /**
+     * Inverts image colors.
+     */
+    private BufferedImage invertImage(BufferedImage source) {
+        BufferedImage inverted = new BufferedImage(
+                source.getWidth(), source.getHeight(), BufferedImage.TYPE_INT_RGB);
+
+        for (int y = 0; y < source.getHeight(); y++) {
+            for (int x = 0; x < source.getWidth(); x++) {
+                int rgb = source.getRGB(x, y);
+                int r = 255 - ((rgb >> 16) & 0xFF);
+                int g = 255 - ((rgb >> 8) & 0xFF);
+                int b = 255 - (rgb & 0xFF);
+                inverted.setRGB(x, y, (r << 16) | (g << 8) | b);
+            }
+        }
+
+        return inverted;
     }
 
     private void populateFieldsTable(OCRResult result) {
@@ -554,6 +631,36 @@ public class OCRDialog {
                     setTooltip(null);
                 }
             }
+        }
+    }
+
+    /**
+     * User-friendly PSM options for the dropdown.
+     */
+    public enum PSMOption {
+        AUTO("Auto (default)", OCRConfiguration.PageSegMode.AUTO),
+        AUTO_OSD("Auto + Orientation", OCRConfiguration.PageSegMode.AUTO_OSD),
+        SINGLE_BLOCK("Single Block", OCRConfiguration.PageSegMode.SINGLE_BLOCK),
+        SINGLE_LINE("Single Line", OCRConfiguration.PageSegMode.SINGLE_LINE),
+        SINGLE_WORD("Single Word", OCRConfiguration.PageSegMode.SINGLE_WORD),
+        SPARSE_TEXT("Sparse Text", OCRConfiguration.PageSegMode.SPARSE_TEXT),
+        SPARSE_TEXT_OSD("Sparse + Orientation", OCRConfiguration.PageSegMode.SPARSE_TEXT_OSD);
+
+        private final String displayName;
+        private final OCRConfiguration.PageSegMode mode;
+
+        PSMOption(String displayName, OCRConfiguration.PageSegMode mode) {
+            this.displayName = displayName;
+            this.mode = mode;
+        }
+
+        public OCRConfiguration.PageSegMode getMode() {
+            return mode;
+        }
+
+        @Override
+        public String toString() {
+            return displayName;
         }
     }
 }
