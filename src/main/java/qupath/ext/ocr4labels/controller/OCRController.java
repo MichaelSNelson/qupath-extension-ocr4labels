@@ -1,0 +1,306 @@
+package qupath.ext.ocr4labels.controller;
+
+import javafx.application.Platform;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import qupath.ext.ocr4labels.model.OCRConfiguration;
+import qupath.ext.ocr4labels.model.OCRResult;
+import qupath.ext.ocr4labels.preferences.OCRPreferences;
+import qupath.ext.ocr4labels.service.OCREngine;
+import qupath.ext.ocr4labels.ui.OCRDialog;
+import qupath.ext.ocr4labels.ui.OCRSettingsDialog;
+import qupath.ext.ocr4labels.utilities.LabelImageUtility;
+import qupath.fx.dialogs.Dialogs;
+import qupath.lib.gui.QuPathGUI;
+import qupath.lib.images.ImageData;
+
+import java.awt.image.BufferedImage;
+import java.io.File;
+import java.util.concurrent.CompletableFuture;
+
+/**
+ * Main controller for OCR operations.
+ * Handles workflow orchestration between UI and services.
+ */
+public class OCRController {
+
+    private static final Logger logger = LoggerFactory.getLogger(OCRController.class);
+
+    private static OCRController instance;
+
+    private OCREngine ocrEngine;
+    private boolean engineInitialized = false;
+
+    private OCRController() {
+        this.ocrEngine = new OCREngine();
+    }
+
+    /**
+     * Gets the singleton instance of the controller.
+     */
+    public static synchronized OCRController getInstance() {
+        if (instance == null) {
+            instance = new OCRController();
+        }
+        return instance;
+    }
+
+    /**
+     * Runs OCR on the current image's label.
+     *
+     * @param qupath The QuPath GUI instance
+     */
+    public void runSingleImageOCR(QuPathGUI qupath) {
+        logger.info("Starting single image OCR workflow");
+
+        ImageData<?> imageData = qupath.getImageData();
+        if (imageData == null) {
+            Dialogs.showErrorMessage("OCR Error", "No image is currently open.");
+            return;
+        }
+
+        // Check for label image
+        if (!LabelImageUtility.isLabelImageAvailable(imageData)) {
+            Dialogs.showErrorMessage("OCR Error",
+                    "No label image available for this slide.\n" +
+                            "Available associated images: " +
+                            LabelImageUtility.getAssociatedImageNames(imageData));
+            return;
+        }
+
+        // Ensure OCR engine is initialized
+        if (!ensureEngineInitialized()) {
+            return;
+        }
+
+        // Get the label image
+        BufferedImage labelImage = LabelImageUtility.retrieveLabelImage(imageData);
+        if (labelImage == null) {
+            Dialogs.showErrorMessage("OCR Error", "Failed to retrieve label image.");
+            return;
+        }
+
+        // Show the OCR dialog
+        OCRDialog.show(qupath, labelImage, ocrEngine);
+    }
+
+    /**
+     * Runs OCR on all images in the current project.
+     *
+     * @param qupath The QuPath GUI instance
+     */
+    public void runProjectOCR(QuPathGUI qupath) {
+        logger.info("Starting project-wide OCR workflow");
+
+        var project = qupath.getProject();
+        if (project == null) {
+            Dialogs.showErrorMessage("OCR Error", "No project is currently open.");
+            return;
+        }
+
+        if (project.getImageList().isEmpty()) {
+            Dialogs.showErrorMessage("OCR Error", "The project contains no images.");
+            return;
+        }
+
+        // Ensure OCR engine is initialized
+        if (!ensureEngineInitialized()) {
+            return;
+        }
+
+        // Count images with labels
+        long imagesWithLabels = project.getImageList().stream()
+                .filter(entry -> {
+                    try {
+                        ImageData<?> data = entry.readImageData();
+                        return data != null && LabelImageUtility.isLabelImageAvailable(data);
+                    } catch (Exception e) {
+                        return false;
+                    }
+                })
+                .count();
+
+        if (imagesWithLabels == 0) {
+            Dialogs.showWarningNotification("OCR Warning",
+                    "No images in the project have label images available.");
+            return;
+        }
+
+        // Confirm with user
+        boolean proceed = Dialogs.showConfirmDialog("Run OCR on Project",
+                String.format("This will run OCR on %d images with labels.\n\n" +
+                                "Do you want to continue?",
+                        imagesWithLabels));
+
+        if (!proceed) {
+            return;
+        }
+
+        // TODO: Implement batch processing dialog
+        Dialogs.showInfoNotification("Coming Soon",
+                "Batch OCR processing will be implemented in a future update.\n" +
+                        "For now, please process images individually.");
+    }
+
+    /**
+     * Shows the OCR settings dialog.
+     *
+     * @param qupath The QuPath GUI instance
+     */
+    public void showSettings(QuPathGUI qupath) {
+        logger.info("Opening OCR settings dialog");
+        OCRSettingsDialog.show(qupath);
+    }
+
+    /**
+     * Performs OCR on an image asynchronously.
+     *
+     * @param image  The image to process
+     * @param config The OCR configuration
+     * @return CompletableFuture containing the OCR result
+     */
+    public CompletableFuture<OCRResult> performOCRAsync(BufferedImage image, OCRConfiguration config) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                if (!engineInitialized) {
+                    throw new OCREngine.OCRException("OCR engine not initialized");
+                }
+                return ocrEngine.processImage(image, config);
+            } catch (OCREngine.OCRException e) {
+                logger.error("OCR processing failed", e);
+                throw new RuntimeException(e);
+            }
+        });
+    }
+
+    /**
+     * Performs OCR synchronously (blocking).
+     *
+     * @param image  The image to process
+     * @param config The OCR configuration
+     * @return The OCR result
+     * @throws OCREngine.OCRException if processing fails
+     */
+    public OCRResult performOCR(BufferedImage image, OCRConfiguration config)
+            throws OCREngine.OCRException {
+        if (!engineInitialized) {
+            throw new OCREngine.OCRException("OCR engine not initialized");
+        }
+        return ocrEngine.processImage(image, config);
+    }
+
+    /**
+     * Ensures the OCR engine is initialized.
+     * Prompts user for tessdata path if not configured.
+     *
+     * @return true if engine is ready, false otherwise
+     */
+    private boolean ensureEngineInitialized() {
+        if (engineInitialized && ocrEngine.isInitialized()) {
+            return true;
+        }
+
+        String tessdataPath = OCRPreferences.getTessdataPath();
+
+        // Check if path is configured
+        if (tessdataPath == null || tessdataPath.isEmpty()) {
+            tessdataPath = promptForTessdataPath();
+            if (tessdataPath == null) {
+                return false;
+            }
+        }
+
+        // Verify path exists
+        File tessdataDir = new File(tessdataPath);
+        if (!tessdataDir.exists() || !tessdataDir.isDirectory()) {
+            Dialogs.showErrorMessage("OCR Configuration Error",
+                    "Tessdata directory not found: " + tessdataPath + "\n\n" +
+                            "Please configure the tessdata path in OCR Settings.");
+            return false;
+        }
+
+        // Check for language file
+        String language = OCRPreferences.getLanguage();
+        File langFile = new File(tessdataDir, language + ".traineddata");
+        if (!langFile.exists()) {
+            Dialogs.showErrorMessage("OCR Configuration Error",
+                    "Language file not found: " + langFile.getName() + "\n\n" +
+                            "Please download the language data file from:\n" +
+                            "https://github.com/tesseract-ocr/tessdata\n\n" +
+                            "Place it in: " + tessdataPath);
+            return false;
+        }
+
+        // Initialize engine
+        try {
+            ocrEngine.initialize(tessdataPath, language);
+            engineInitialized = true;
+            logger.info("OCR engine initialized successfully");
+            return true;
+        } catch (OCREngine.OCRException e) {
+            Dialogs.showErrorMessage("OCR Initialization Error",
+                    "Failed to initialize OCR engine:\n" + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Prompts the user to select the tessdata directory.
+     *
+     * @return The selected path, or null if cancelled
+     */
+    private String promptForTessdataPath() {
+        // Show info dialog first
+        Dialogs.showMessageDialog("OCR Setup Required",
+                "To use OCR, you need to configure the Tesseract data directory.\n\n" +
+                        "1. Download language data from: https://github.com/tesseract-ocr/tessdata\n" +
+                        "2. Place the .traineddata file(s) in a 'tessdata' folder\n" +
+                        "3. Select that folder in the next dialog");
+
+        // Show directory chooser
+        File selectedDir = Dialogs.promptForDirectory("Select Tessdata Directory", null);
+
+        if (selectedDir != null && selectedDir.isDirectory()) {
+            String path = selectedDir.getAbsolutePath();
+            OCRPreferences.setTessdataPath(path);
+            logger.info("Tessdata path set to: {}", path);
+            return path;
+        }
+
+        return null;
+    }
+
+    /**
+     * Gets the current OCR configuration from preferences.
+     */
+    public OCRConfiguration getCurrentConfiguration() {
+        return OCRConfiguration.builder()
+                .language(OCRPreferences.getLanguage())
+                .minConfidence(OCRPreferences.getMinConfidence())
+                .autoRotate(OCRPreferences.isAutoRotate())
+                .enhanceContrast(OCRPreferences.isEnhanceContrast())
+                .detectOrientation(OCRPreferences.isDetectOrientation())
+                .pageSegMode(OCRConfiguration.PageSegMode.values()[
+                        Math.min(OCRPreferences.getPageSegMode(),
+                                OCRConfiguration.PageSegMode.values().length - 1)])
+                .build();
+    }
+
+    /**
+     * Checks if the OCR engine is initialized.
+     */
+    public boolean isEngineInitialized() {
+        return engineInitialized && ocrEngine.isInitialized();
+    }
+
+    /**
+     * Disposes resources held by the controller.
+     */
+    public void dispose() {
+        if (ocrEngine != null) {
+            ocrEngine.dispose();
+        }
+        engineInitialized = false;
+        logger.info("OCR controller disposed");
+    }
+}
