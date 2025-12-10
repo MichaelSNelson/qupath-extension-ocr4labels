@@ -1,0 +1,752 @@
+package qupath.ext.ocr4labels.ui;
+
+import javafx.application.Platform;
+import javafx.beans.property.SimpleBooleanProperty;
+import javafx.beans.property.SimpleStringProperty;
+import javafx.collections.FXCollections;
+import javafx.collections.ObservableList;
+import javafx.geometry.Insets;
+import javafx.geometry.Pos;
+import javafx.scene.Scene;
+import javafx.scene.control.*;
+import javafx.scene.control.cell.CheckBoxTableCell;
+import javafx.scene.layout.*;
+import javafx.stage.FileChooser;
+import javafx.stage.Modality;
+import javafx.stage.Stage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import qupath.ext.ocr4labels.model.OCRConfiguration;
+import qupath.ext.ocr4labels.model.OCRResult;
+import qupath.ext.ocr4labels.model.OCRTemplate;
+import qupath.ext.ocr4labels.model.TextBlock;
+import qupath.ext.ocr4labels.preferences.OCRPreferences;
+import qupath.ext.ocr4labels.service.OCREngine;
+import qupath.ext.ocr4labels.utilities.LabelImageUtility;
+import qupath.ext.ocr4labels.utilities.OCRMetadataManager;
+import qupath.fx.dialogs.Dialogs;
+import qupath.lib.gui.QuPathGUI;
+import qupath.lib.images.ImageData;
+import qupath.lib.projects.Project;
+import qupath.lib.projects.ProjectImageEntry;
+
+import java.awt.image.BufferedImage;
+import java.io.File;
+import java.io.IOException;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * Dialog for batch OCR processing across all images in a project.
+ * Allows users to create or load a template, preview results, and apply to all images.
+ */
+public class BatchOCRDialog {
+
+    private static final Logger logger = LoggerFactory.getLogger(BatchOCRDialog.class);
+
+    private final QuPathGUI qupath;
+    private final Project<?> project;
+    private final OCREngine ocrEngine;
+    private final List<ProjectImageEntry<?>> imagesWithLabels;
+
+    private Stage stage;
+    private OCRTemplate currentTemplate;
+    private ObservableList<ImageProcessingEntry> imageEntries;
+
+    // UI components
+    private TableView<OCRTemplate.FieldMapping> templateTable;
+    private TableView<ImageProcessingEntry> resultsTable;
+    private ProgressBar progressBar;
+    private Label statusLabel;
+    private Button processButton;
+    private Button applyButton;
+    private AtomicBoolean processingCancelled;
+
+    /**
+     * Shows the batch OCR dialog.
+     */
+    public static void show(QuPathGUI qupath, OCREngine ocrEngine) {
+        new BatchOCRDialog(qupath, ocrEngine).showDialog();
+    }
+
+    private BatchOCRDialog(QuPathGUI qupath, OCREngine ocrEngine) {
+        this.qupath = qupath;
+        this.project = qupath.getProject();
+        this.ocrEngine = ocrEngine;
+        this.imagesWithLabels = findImagesWithLabels();
+        this.imageEntries = FXCollections.observableArrayList();
+        this.processingCancelled = new AtomicBoolean(false);
+    }
+
+    private List<ProjectImageEntry<?>> findImagesWithLabels() {
+        List<ProjectImageEntry<?>> result = new ArrayList<>();
+        if (project == null) return result;
+
+        for (ProjectImageEntry<?> entry : project.getImageList()) {
+            try {
+                ImageData<?> imageData = entry.readImageData();
+                if (imageData != null && LabelImageUtility.isLabelImageAvailable(imageData)) {
+                    result.add(entry);
+                }
+            } catch (Exception e) {
+                logger.debug("Could not check image for label: {}", entry.getImageName());
+            }
+        }
+        return result;
+    }
+
+    private void showDialog() {
+        if (imagesWithLabels.isEmpty()) {
+            Dialogs.showWarningNotification("No Labels Found",
+                    "No images in the project have label images available.");
+            return;
+        }
+
+        stage = new Stage();
+        stage.setTitle("Batch OCR Processing");
+        stage.initOwner(qupath.getStage());
+        stage.initModality(Modality.WINDOW_MODAL);
+
+        BorderPane root = new BorderPane();
+        root.setTop(createHeaderPane());
+        root.setCenter(createMainContent());
+        root.setBottom(createButtonBar());
+
+        Scene scene = new Scene(root, 900, 650);
+        stage.setScene(scene);
+        stage.show();
+
+        // Initialize image entries
+        for (ProjectImageEntry<?> entry : imagesWithLabels) {
+            imageEntries.add(new ImageProcessingEntry(entry));
+        }
+    }
+
+    private VBox createHeaderPane() {
+        VBox header = new VBox(10);
+        header.setPadding(new Insets(15));
+        header.setStyle("-fx-background-color: #f0f0f0;");
+
+        Label titleLabel = new Label("Batch OCR Processing");
+        titleLabel.setStyle("-fx-font-size: 16px; -fx-font-weight: bold;");
+
+        Label infoLabel = new Label(String.format(
+                "Found %d images with labels out of %d total images in project.",
+                imagesWithLabels.size(), project.getImageList().size()));
+
+        Label instructionLabel = new Label(
+                "1. Create a template by running OCR on a sample image, or load a saved template.\n" +
+                "2. Review the field mappings below.\n" +
+                "3. Click 'Process All' to run OCR on all images.\n" +
+                "4. Review results and click 'Apply Metadata' to save.");
+        instructionLabel.setStyle("-fx-font-size: 11px; -fx-text-fill: #666666;");
+
+        header.getChildren().addAll(titleLabel, infoLabel, instructionLabel);
+        return header;
+    }
+
+    private SplitPane createMainContent() {
+        SplitPane splitPane = new SplitPane();
+        splitPane.setOrientation(javafx.geometry.Orientation.VERTICAL);
+
+        // Top: Template section
+        VBox templateSection = createTemplateSection();
+
+        // Bottom: Results section
+        VBox resultsSection = createResultsSection();
+
+        splitPane.getItems().addAll(templateSection, resultsSection);
+        splitPane.setDividerPositions(0.4);
+
+        return splitPane;
+    }
+
+    private VBox createTemplateSection() {
+        VBox section = new VBox(10);
+        section.setPadding(new Insets(10));
+
+        // Template toolbar
+        HBox toolbar = new HBox(10);
+        toolbar.setAlignment(Pos.CENTER_LEFT);
+
+        Label templateLabel = new Label("Field Mappings:");
+        templateLabel.setStyle("-fx-font-weight: bold;");
+
+        Button createFromCurrentBtn = new Button("Create from Current Image");
+        createFromCurrentBtn.setTooltip(new Tooltip(
+                "Run OCR on the currently open image and use its fields as a template"));
+        createFromCurrentBtn.setOnAction(e -> createTemplateFromCurrentImage());
+
+        Button loadTemplateBtn = new Button("Load Template...");
+        loadTemplateBtn.setTooltip(new Tooltip("Load a previously saved template file"));
+        loadTemplateBtn.setOnAction(e -> loadTemplate());
+
+        Button saveTemplateBtn = new Button("Save Template...");
+        saveTemplateBtn.setTooltip(new Tooltip("Save the current field mappings to a file"));
+        saveTemplateBtn.setOnAction(e -> saveTemplate());
+        saveTemplateBtn.disableProperty().bind(
+                javafx.beans.binding.Bindings.createBooleanBinding(
+                        () -> currentTemplate == null || currentTemplate.getFieldMappings().isEmpty(),
+                        templateTable != null ? templateTable.getItems() : FXCollections.observableArrayList()
+                )
+        );
+
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+
+        toolbar.getChildren().addAll(templateLabel, createFromCurrentBtn, loadTemplateBtn, saveTemplateBtn);
+
+        // Template table
+        templateTable = new TableView<>();
+        templateTable.setPlaceholder(new Label("No template loaded. Create or load a template to begin."));
+        templateTable.setEditable(true);
+
+        TableColumn<OCRTemplate.FieldMapping, Boolean> enabledCol = new TableColumn<>("Use");
+        enabledCol.setCellValueFactory(data -> {
+            SimpleBooleanProperty prop = new SimpleBooleanProperty(data.getValue().isEnabled());
+            prop.addListener((obs, old, newVal) -> data.getValue().setEnabled(newVal));
+            return prop;
+        });
+        enabledCol.setCellFactory(CheckBoxTableCell.forTableColumn(enabledCol));
+        enabledCol.setPrefWidth(50);
+
+        TableColumn<OCRTemplate.FieldMapping, String> indexCol = new TableColumn<>("Field #");
+        indexCol.setCellValueFactory(data ->
+                new SimpleStringProperty(String.valueOf(data.getValue().getFieldIndex() + 1)));
+        indexCol.setPrefWidth(60);
+
+        TableColumn<OCRTemplate.FieldMapping, String> keyCol = new TableColumn<>("Metadata Key");
+        keyCol.setCellValueFactory(data ->
+                new SimpleStringProperty(data.getValue().getMetadataKey()));
+        keyCol.setPrefWidth(150);
+
+        TableColumn<OCRTemplate.FieldMapping, String> exampleCol = new TableColumn<>("Example Text");
+        exampleCol.setCellValueFactory(data ->
+                new SimpleStringProperty(data.getValue().getExampleText()));
+        exampleCol.setPrefWidth(250);
+
+        templateTable.getColumns().addAll(enabledCol, indexCol, keyCol, exampleCol);
+        VBox.setVgrow(templateTable, Priority.ALWAYS);
+
+        section.getChildren().addAll(toolbar, templateTable);
+        return section;
+    }
+
+    private VBox createResultsSection() {
+        VBox section = new VBox(10);
+        section.setPadding(new Insets(10));
+
+        Label resultsLabel = new Label("Processing Results:");
+        resultsLabel.setStyle("-fx-font-weight: bold;");
+
+        // Results table
+        resultsTable = new TableView<>(imageEntries);
+        resultsTable.setPlaceholder(new Label("Click 'Process All' to run OCR on all images."));
+
+        TableColumn<ImageProcessingEntry, String> nameCol = new TableColumn<>("Image Name");
+        nameCol.setCellValueFactory(data ->
+                new SimpleStringProperty(data.getValue().getImageName()));
+        nameCol.setPrefWidth(250);
+
+        TableColumn<ImageProcessingEntry, String> statusCol = new TableColumn<>("Status");
+        statusCol.setCellValueFactory(data -> data.getValue().statusProperty());
+        statusCol.setPrefWidth(100);
+
+        TableColumn<ImageProcessingEntry, String> fieldsCol = new TableColumn<>("Fields Found");
+        fieldsCol.setCellValueFactory(data -> data.getValue().fieldsFoundProperty());
+        fieldsCol.setPrefWidth(100);
+
+        TableColumn<ImageProcessingEntry, String> previewCol = new TableColumn<>("Metadata Preview");
+        previewCol.setCellValueFactory(data -> data.getValue().metadataPreviewProperty());
+        previewCol.setPrefWidth(350);
+
+        resultsTable.getColumns().addAll(nameCol, statusCol, fieldsCol, previewCol);
+        VBox.setVgrow(resultsTable, Priority.ALWAYS);
+
+        // Progress section
+        HBox progressBox = new HBox(10);
+        progressBox.setAlignment(Pos.CENTER_LEFT);
+
+        progressBar = new ProgressBar(0);
+        progressBar.setPrefWidth(300);
+        progressBar.setVisible(false);
+
+        statusLabel = new Label("");
+
+        progressBox.getChildren().addAll(progressBar, statusLabel);
+
+        section.getChildren().addAll(resultsLabel, resultsTable, progressBox);
+        return section;
+    }
+
+    private HBox createButtonBar() {
+        HBox buttonBar = new HBox(15);
+        buttonBar.setPadding(new Insets(15));
+        buttonBar.setAlignment(Pos.CENTER_RIGHT);
+
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+
+        processButton = new Button("Process All");
+        processButton.setTooltip(new Tooltip("Run OCR on all images using the current template"));
+        processButton.setOnAction(e -> processAllImages());
+        processButton.setDisable(true); // Enabled when template is loaded
+
+        applyButton = new Button("Apply Metadata");
+        applyButton.setTooltip(new Tooltip("Save the detected metadata to all processed images"));
+        applyButton.setOnAction(e -> applyAllMetadata());
+        applyButton.setDisable(true); // Enabled after processing
+
+        Button cancelButton = new Button("Cancel");
+        cancelButton.setOnAction(e -> {
+            processingCancelled.set(true);
+            stage.close();
+        });
+
+        buttonBar.getChildren().addAll(spacer, processButton, applyButton, cancelButton);
+        return buttonBar;
+    }
+
+    private void createTemplateFromCurrentImage() {
+        ImageData<?> imageData = qupath.getImageData();
+        if (imageData == null) {
+            Dialogs.showWarningNotification("No Image Open",
+                    "Please open an image first to create a template from it.");
+            return;
+        }
+
+        if (!LabelImageUtility.isLabelImageAvailable(imageData)) {
+            Dialogs.showWarningNotification("No Label Image",
+                    "The current image does not have a label image.");
+            return;
+        }
+
+        // Get the label image
+        BufferedImage labelImage = LabelImageUtility.retrieveLabelImage(imageData);
+        if (labelImage == null) {
+            Dialogs.showErrorMessage("Error", "Could not retrieve label image.");
+            return;
+        }
+
+        // Run OCR
+        statusLabel.setText("Running OCR on current image...");
+        progressBar.setVisible(true);
+        progressBar.setProgress(-1); // Indeterminate
+
+        new Thread(() -> {
+            try {
+                OCRConfiguration config = OCRConfiguration.builder()
+                        .pageSegMode(OCRConfiguration.PageSegMode.SPARSE_TEXT)
+                        .language(OCRPreferences.getLanguage())
+                        .minConfidence(OCRPreferences.getMinConfidence())
+                        .enhanceContrast(OCRPreferences.isEnhanceContrast())
+                        .build();
+
+                OCRResult result = ocrEngine.processImage(labelImage, config);
+
+                Platform.runLater(() -> {
+                    progressBar.setVisible(false);
+                    statusLabel.setText("");
+
+                    if (result.getBlockCount() == 0) {
+                        Dialogs.showWarningNotification("No Text Found",
+                                "OCR did not detect any text on the label.");
+                        return;
+                    }
+
+                    // Create template from results
+                    currentTemplate = new OCRTemplate("Template from " + imageData.getServer().getMetadata().getName());
+                    currentTemplate.setConfiguration(config);
+
+                    String prefix = OCRPreferences.getMetadataPrefix();
+                    int fieldIndex = 0;
+
+                    // Get lines first, then words if no lines
+                    List<TextBlock> blocks = new ArrayList<>();
+                    for (TextBlock block : result.getTextBlocks()) {
+                        if (block.getType() == TextBlock.BlockType.LINE && !block.isEmpty()) {
+                            blocks.add(block);
+                        }
+                    }
+                    if (blocks.isEmpty()) {
+                        for (TextBlock block : result.getTextBlocks()) {
+                            if (block.getType() == TextBlock.BlockType.WORD && !block.isEmpty()) {
+                                blocks.add(block);
+                            }
+                        }
+                    }
+
+                    for (TextBlock block : blocks) {
+                        String key = prefix + "field_" + fieldIndex;
+                        OCRTemplate.FieldMapping mapping = new OCRTemplate.FieldMapping(
+                                fieldIndex, key, block.getText());
+                        currentTemplate.addFieldMapping(mapping);
+                        fieldIndex++;
+                    }
+
+                    // Update table
+                    templateTable.setItems(FXCollections.observableArrayList(
+                            currentTemplate.getFieldMappings()));
+                    processButton.setDisable(false);
+
+                    Dialogs.showInfoNotification("Template Created",
+                            String.format("Created template with %d field mappings.\n" +
+                                    "Edit the metadata keys as needed, then click 'Process All'.",
+                                    currentTemplate.getFieldMappings().size()));
+                });
+
+            } catch (Exception e) {
+                logger.error("Error creating template", e);
+                Platform.runLater(() -> {
+                    progressBar.setVisible(false);
+                    statusLabel.setText("");
+                    Dialogs.showErrorMessage("OCR Error", "Failed to run OCR: " + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    private void loadTemplate() {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Load OCR Template");
+        chooser.getExtensionFilters().add(
+                new FileChooser.ExtensionFilter("OCR Template (*.json)", "*.json"));
+
+        File file = chooser.showOpenDialog(stage);
+        if (file == null) return;
+
+        try {
+            currentTemplate = OCRTemplate.loadFromFile(file);
+            templateTable.setItems(FXCollections.observableArrayList(
+                    currentTemplate.getFieldMappings()));
+            processButton.setDisable(false);
+
+            Dialogs.showInfoNotification("Template Loaded",
+                    String.format("Loaded template '%s' with %d field mappings.",
+                            currentTemplate.getName(), currentTemplate.getFieldMappings().size()));
+
+        } catch (IOException e) {
+            logger.error("Error loading template", e);
+            Dialogs.showErrorMessage("Load Error", "Failed to load template: " + e.getMessage());
+        }
+    }
+
+    private void saveTemplate() {
+        if (currentTemplate == null || currentTemplate.getFieldMappings().isEmpty()) {
+            Dialogs.showWarningNotification("No Template",
+                    "Create a template first before saving.");
+            return;
+        }
+
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Save OCR Template");
+        chooser.getExtensionFilters().add(
+                new FileChooser.ExtensionFilter("OCR Template (*.json)", "*.json"));
+        chooser.setInitialFileName("ocr_template.json");
+
+        File file = chooser.showSaveDialog(stage);
+        if (file == null) return;
+
+        try {
+            // Update template with current table values
+            currentTemplate.setFieldMappings(new ArrayList<>(templateTable.getItems()));
+            currentTemplate.saveToFile(file);
+
+            Dialogs.showInfoNotification("Template Saved",
+                    "Template saved to: " + file.getName());
+
+        } catch (IOException e) {
+            logger.error("Error saving template", e);
+            Dialogs.showErrorMessage("Save Error", "Failed to save template: " + e.getMessage());
+        }
+    }
+
+    private void processAllImages() {
+        if (currentTemplate == null || currentTemplate.getFieldMappings().isEmpty()) {
+            Dialogs.showWarningNotification("No Template",
+                    "Please create or load a template first.");
+            return;
+        }
+
+        // Update template with any edits
+        currentTemplate.setFieldMappings(new ArrayList<>(templateTable.getItems()));
+
+        int enabledCount = currentTemplate.getEnabledMappingCount();
+        if (enabledCount == 0) {
+            Dialogs.showWarningNotification("No Fields Enabled",
+                    "Please enable at least one field mapping.");
+            return;
+        }
+
+        processingCancelled.set(false);
+        processButton.setDisable(true);
+        applyButton.setDisable(true);
+        progressBar.setVisible(true);
+        progressBar.setProgress(0);
+
+        // Reset all entries
+        for (ImageProcessingEntry entry : imageEntries) {
+            entry.reset();
+        }
+
+        int totalImages = imageEntries.size();
+        AtomicInteger processedCount = new AtomicInteger(0);
+
+        new Thread(() -> {
+            OCRConfiguration config = currentTemplate.getConfiguration();
+            if (config == null) {
+                config = OCRConfiguration.builder()
+                        .pageSegMode(OCRConfiguration.PageSegMode.SPARSE_TEXT)
+                        .language(OCRPreferences.getLanguage())
+                        .minConfidence(OCRPreferences.getMinConfidence())
+                        .enhanceContrast(OCRPreferences.isEnhanceContrast())
+                        .build();
+            }
+
+            for (ImageProcessingEntry entry : imageEntries) {
+                if (processingCancelled.get()) {
+                    break;
+                }
+
+                int current = processedCount.incrementAndGet();
+                Platform.runLater(() -> {
+                    progressBar.setProgress((double) current / totalImages);
+                    statusLabel.setText(String.format("Processing %d of %d: %s",
+                            current, totalImages, entry.getImageName()));
+                });
+
+                processImage(entry, config);
+            }
+
+            Platform.runLater(() -> {
+                progressBar.setVisible(false);
+                processButton.setDisable(false);
+
+                if (processingCancelled.get()) {
+                    statusLabel.setText("Processing cancelled.");
+                } else {
+                    // Count successful
+                    long successful = imageEntries.stream()
+                            .filter(e -> "Done".equals(e.getStatus()))
+                            .count();
+                    statusLabel.setText(String.format("Processed %d images. %d successful.",
+                            totalImages, successful));
+                    applyButton.setDisable(successful == 0);
+                }
+            });
+
+        }).start();
+    }
+
+    private void processImage(ImageProcessingEntry entry, OCRConfiguration config) {
+        try {
+            entry.setStatus("Processing...");
+
+            ImageData<?> imageData = entry.getProjectEntry().readImageData();
+            if (imageData == null) {
+                entry.setStatus("Error");
+                entry.setFieldsFound("N/A");
+                return;
+            }
+
+            BufferedImage labelImage = LabelImageUtility.retrieveLabelImage(imageData);
+            if (labelImage == null) {
+                entry.setStatus("No label");
+                entry.setFieldsFound("N/A");
+                return;
+            }
+
+            OCRResult result = ocrEngine.processImage(labelImage, config);
+
+            // Extract text blocks
+            List<String> detectedTexts = new ArrayList<>();
+            for (TextBlock block : result.getTextBlocks()) {
+                if (block.getType() == TextBlock.BlockType.LINE && !block.isEmpty()) {
+                    detectedTexts.add(block.getText());
+                }
+            }
+            if (detectedTexts.isEmpty()) {
+                for (TextBlock block : result.getTextBlocks()) {
+                    if (block.getType() == TextBlock.BlockType.WORD && !block.isEmpty()) {
+                        detectedTexts.add(block.getText());
+                    }
+                }
+            }
+
+            entry.setFieldsFound(String.valueOf(detectedTexts.size()));
+            entry.setDetectedTexts(detectedTexts);
+
+            // Build metadata map based on template
+            Map<String, String> metadata = new LinkedHashMap<>();
+            for (OCRTemplate.FieldMapping mapping : currentTemplate.getFieldMappings()) {
+                if (!mapping.isEnabled()) continue;
+
+                int idx = mapping.getFieldIndex();
+                if (idx < detectedTexts.size()) {
+                    metadata.put(mapping.getMetadataKey(), detectedTexts.get(idx));
+                }
+            }
+
+            entry.setMetadata(metadata);
+
+            // Build preview string
+            if (metadata.isEmpty()) {
+                entry.setMetadataPreview("(no matching fields)");
+            } else {
+                StringBuilder preview = new StringBuilder();
+                int count = 0;
+                for (Map.Entry<String, String> e : metadata.entrySet()) {
+                    if (count > 0) preview.append(", ");
+                    preview.append(e.getKey()).append("=").append(e.getValue());
+                    if (++count >= 3 && metadata.size() > 3) {
+                        preview.append("... (+").append(metadata.size() - 3).append(" more)");
+                        break;
+                    }
+                }
+                entry.setMetadataPreview(preview.toString());
+            }
+
+            entry.setStatus("Done");
+
+        } catch (Exception e) {
+            logger.error("Error processing image: {}", entry.getImageName(), e);
+            entry.setStatus("Error");
+            entry.setFieldsFound("N/A");
+            entry.setMetadataPreview(e.getMessage());
+        }
+    }
+
+    private void applyAllMetadata() {
+        long successCount = imageEntries.stream()
+                .filter(e -> "Done".equals(e.getStatus()) && e.getMetadata() != null && !e.getMetadata().isEmpty())
+                .count();
+
+        if (successCount == 0) {
+            Dialogs.showWarningNotification("No Metadata",
+                    "No images have metadata to apply.");
+            return;
+        }
+
+        boolean confirm = Dialogs.showConfirmDialog("Apply Metadata",
+                String.format("This will apply OCR metadata to %d images.\n\n" +
+                        "Do you want to continue?", successCount));
+
+        if (!confirm) return;
+
+        int applied = 0;
+        int failed = 0;
+
+        for (ImageProcessingEntry entry : imageEntries) {
+            if (!"Done".equals(entry.getStatus())) continue;
+            if (entry.getMetadata() == null || entry.getMetadata().isEmpty()) continue;
+
+            try {
+                int count = OCRMetadataManager.setMetadataBatch(
+                        entry.getProjectEntry(), entry.getMetadata(), project);
+                if (count > 0) {
+                    applied++;
+                    entry.setStatus("Applied");
+                } else {
+                    failed++;
+                    entry.setStatus("Failed");
+                }
+            } catch (Exception e) {
+                logger.error("Error applying metadata to: {}", entry.getImageName(), e);
+                failed++;
+                entry.setStatus("Failed");
+            }
+        }
+
+        resultsTable.refresh();
+
+        if (failed == 0) {
+            Dialogs.showInfoNotification("Metadata Applied",
+                    String.format("Successfully applied metadata to %d images.", applied));
+        } else {
+            Dialogs.showWarningNotification("Partial Success",
+                    String.format("Applied metadata to %d images. %d failed.", applied, failed));
+        }
+
+        applyButton.setDisable(true);
+    }
+
+    /**
+     * Entry representing an image being processed.
+     */
+    public static class ImageProcessingEntry {
+        private final ProjectImageEntry<?> projectEntry;
+        private final SimpleStringProperty status;
+        private final SimpleStringProperty fieldsFound;
+        private final SimpleStringProperty metadataPreview;
+        private List<String> detectedTexts;
+        private Map<String, String> metadata;
+
+        public ImageProcessingEntry(ProjectImageEntry<?> projectEntry) {
+            this.projectEntry = projectEntry;
+            this.status = new SimpleStringProperty("Pending");
+            this.fieldsFound = new SimpleStringProperty("-");
+            this.metadataPreview = new SimpleStringProperty("-");
+        }
+
+        public void reset() {
+            status.set("Pending");
+            fieldsFound.set("-");
+            metadataPreview.set("-");
+            detectedTexts = null;
+            metadata = null;
+        }
+
+        public ProjectImageEntry<?> getProjectEntry() {
+            return projectEntry;
+        }
+
+        public String getImageName() {
+            return projectEntry.getImageName();
+        }
+
+        public String getStatus() {
+            return status.get();
+        }
+
+        public void setStatus(String value) {
+            Platform.runLater(() -> status.set(value));
+        }
+
+        public SimpleStringProperty statusProperty() {
+            return status;
+        }
+
+        public void setFieldsFound(String value) {
+            Platform.runLater(() -> fieldsFound.set(value));
+        }
+
+        public SimpleStringProperty fieldsFoundProperty() {
+            return fieldsFound;
+        }
+
+        public void setMetadataPreview(String value) {
+            Platform.runLater(() -> metadataPreview.set(value));
+        }
+
+        public SimpleStringProperty metadataPreviewProperty() {
+            return metadataPreview;
+        }
+
+        public List<String> getDetectedTexts() {
+            return detectedTexts;
+        }
+
+        public void setDetectedTexts(List<String> detectedTexts) {
+            this.detectedTexts = detectedTexts;
+        }
+
+        public Map<String, String> getMetadata() {
+            return metadata;
+        }
+
+        public void setMetadata(Map<String, String> metadata) {
+            this.metadata = metadata;
+        }
+    }
+}

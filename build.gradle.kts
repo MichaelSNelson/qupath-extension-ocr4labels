@@ -30,6 +30,9 @@ dependencies {
     // Tess4J for OCR (includes Tesseract and Leptonica native bindings)
     implementation("net.sourceforge.tess4j:tess4j:5.11.0")
 
+    // Gson for JSON serialization (template save/load)
+    implementation("com.google.code.gson:gson:2.10.1")
+
     // For testing
     testImplementation(libs.bundles.qupath)
     testImplementation("org.junit.jupiter:junit-jupiter:5.9.1")

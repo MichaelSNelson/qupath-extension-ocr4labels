@@ -8,6 +8,7 @@ import qupath.ext.ocr4labels.model.OCRConfiguration;
 import qupath.ext.ocr4labels.model.OCRResult;
 import qupath.ext.ocr4labels.preferences.OCRPreferences;
 import qupath.ext.ocr4labels.service.OCREngine;
+import qupath.ext.ocr4labels.ui.BatchOCRDialog;
 import qupath.ext.ocr4labels.ui.OCRDialog;
 import qupath.ext.ocr4labels.ui.OCRSettingsDialog;
 import qupath.ext.ocr4labels.utilities.LabelImageUtility;
@@ -127,20 +128,8 @@ public class OCRController {
             return;
         }
 
-        // Confirm with user
-        boolean proceed = Dialogs.showConfirmDialog("Run OCR on Project",
-                String.format("This will run OCR on %d images with labels.\n\n" +
-                                "Do you want to continue?",
-                        imagesWithLabels));
-
-        if (!proceed) {
-            return;
-        }
-
-        // TODO: Implement batch processing dialog
-        Dialogs.showInfoNotification("Coming Soon",
-                "Batch OCR processing will be implemented in a future update.\n" +
-                        "For now, please process images individually.");
+        // Show batch processing dialog
+        BatchOCRDialog.show(qupath, ocrEngine);
     }
 
     /**
