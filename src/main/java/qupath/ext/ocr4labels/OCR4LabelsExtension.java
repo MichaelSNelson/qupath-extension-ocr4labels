@@ -2,6 +2,7 @@ package qupath.ext.ocr4labels;
 
 import javafx.application.Platform;
 import javafx.beans.binding.Bindings;
+import javafx.scene.control.Menu;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.SeparatorMenuItem;
 import org.slf4j.Logger;
@@ -13,8 +14,14 @@ import qupath.lib.common.Version;
 import qupath.lib.gui.QuPathGUI;
 import qupath.lib.gui.extensions.GitHubProject;
 import qupath.lib.gui.extensions.QuPathExtension;
+import qupath.lib.gui.scripting.ScriptEditor;
 
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ResourceBundle;
+import java.util.stream.Collectors;
 
 /**
  * QuPath extension for performing OCR on slide label images
@@ -114,14 +121,89 @@ public class OCR4LabelsExtension implements QuPathExtension, GitHubProject {
         settingsItem.setOnAction(e ->
                 OCRController.getInstance().showSettings(qupath));
 
+        // 4) Example Scripts submenu
+        Menu exampleScriptsMenu = createExampleScriptsMenu(qupath);
+
         // Add all menu items
         extensionMenu.getItems().addAll(
                 singleImageOCR,
                 projectOCR,
                 new SeparatorMenuItem(),
-                settingsItem
+                settingsItem,
+                new SeparatorMenuItem(),
+                exampleScriptsMenu
         );
 
         logger.info("Menu items added for extension: {}", EXTENSION_NAME);
+    }
+
+    /**
+     * Creates the Example Scripts submenu with script loading options.
+     */
+    private Menu createExampleScriptsMenu(QuPathGUI qupath) {
+        Menu menu = new Menu("Example Scripts");
+
+        // Basic OCR Detection
+        MenuItem basicOCR = new MenuItem("Basic OCR Detection");
+        basicOCR.setOnAction(e -> openExampleScript(qupath, "basic_ocr.groovy",
+                "Basic OCR Detection - Run on a single image to test OCR"));
+
+        // Custom Field Mapping
+        MenuItem customMapping = new MenuItem("Custom Field Mapping");
+        customMapping.setOnAction(e -> openExampleScript(qupath, "custom_mapping.groovy",
+                "Custom Field Mapping - Map specific fields to metadata keys"));
+
+        // Conditional Processing
+        MenuItem conditionalProcessing = new MenuItem("Conditional Processing");
+        conditionalProcessing.setOnAction(e -> openExampleScript(qupath, "conditional_processing.groovy",
+                "Conditional Processing - Different settings based on image name"));
+
+        // Batch Processing Template
+        MenuItem batchTemplate = new MenuItem("Batch Processing Template");
+        batchTemplate.setOnAction(e -> openExampleScript(qupath, "batch_template.groovy",
+                "Batch Processing Template - Use with Run for Project"));
+
+        menu.getItems().addAll(
+                basicOCR,
+                customMapping,
+                conditionalProcessing,
+                batchTemplate
+        );
+
+        return menu;
+    }
+
+    /**
+     * Opens an example script in QuPath's Script Editor.
+     */
+    private void openExampleScript(QuPathGUI qupath, String scriptName, String description) {
+        try {
+            // Load script from resources
+            String resourcePath = "/scripts/" + scriptName;
+            InputStream is = getClass().getResourceAsStream(resourcePath);
+
+            if (is == null) {
+                logger.error("Script resource not found: {}", resourcePath);
+                qupath.getScriptEditor().showScript(description,
+                        "// Error: Script file not found: " + scriptName + "\n" +
+                        "// Please check the extension installation.");
+                return;
+            }
+
+            String scriptContent;
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(is, StandardCharsets.UTF_8))) {
+                scriptContent = reader.lines().collect(Collectors.joining("\n"));
+            }
+
+            // Open in Script Editor
+            ScriptEditor editor = qupath.getScriptEditor();
+            editor.showScript(description, scriptContent);
+
+            logger.info("Opened example script: {}", scriptName);
+
+        } catch (Exception e) {
+            logger.error("Failed to open example script: {}", scriptName, e);
+        }
     }
 }

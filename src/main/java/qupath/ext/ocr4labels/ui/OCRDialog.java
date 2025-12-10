@@ -31,6 +31,7 @@ import qupath.ext.ocr4labels.utilities.MetadataKeyValidator;
 import qupath.ext.ocr4labels.utilities.OCRMetadataManager;
 import qupath.fx.dialogs.Dialogs;
 import qupath.lib.gui.QuPathGUI;
+import qupath.lib.plugins.workflow.DefaultScriptableWorkflowStep;
 import qupath.lib.projects.Project;
 import qupath.lib.scripting.QP;
 
@@ -564,7 +565,9 @@ public class OCRDialog {
         }
 
         Map<String, String> metadata = new HashMap<>();
+        Map<Integer, String> fieldMappings = new HashMap<>();
 
+        int fieldIndex = 0;
         for (OCRFieldEntry entry : fieldEntries) {
             String key = entry.getMetadataKey();
             String value = entry.getText();
@@ -573,8 +576,10 @@ public class OCRDialog {
                 MetadataKeyValidator.ValidationResult validation = MetadataKeyValidator.validateKey(key);
                 if (validation.isValid()) {
                     metadata.put(key, value);
+                    fieldMappings.put(fieldIndex, key);
                 }
             }
+            fieldIndex++;
         }
 
         if (metadata.isEmpty()) {
@@ -587,12 +592,110 @@ public class OCRDialog {
         int count = OCRMetadataManager.setMetadataBatch(projectEntry, metadata, project);
 
         if (count > 0) {
+            // Add workflow step for reproducibility
+            addWorkflowStep(fieldMappings);
+
             Dialogs.showInfoNotification("Metadata Applied",
                     String.format("Successfully applied %d metadata fields.", count));
             stage.close();
         } else {
             Dialogs.showErrorMessage("Apply Failed",
                     "Failed to apply metadata. Check the log for details.");
+        }
+    }
+
+    /**
+     * Adds a workflow step to the current image's history.
+     * This allows the OCR operation to be reproduced via script.
+     */
+    private void addWorkflowStep(Map<Integer, String> fieldMappings) {
+        var imageData = qupath.getImageData();
+        if (imageData == null) {
+            logger.debug("No image data - skipping workflow step");
+            return;
+        }
+
+        // Build configuration string based on current settings
+        PSMOption selectedPSM = psmCombo.getValue();
+        boolean invert = invertCheckBox.isSelected();
+        boolean enhance = thresholdCheckBox.isSelected();
+        double confidence = confSlider.getValue() / 100.0;
+
+        StringBuilder script = new StringBuilder();
+        script.append("// OCR for Labels - Auto-generated script\n");
+        script.append("// Run this script to reproduce OCR results on similar images\n");
+        script.append("import qupath.ext.ocr4labels.OCR4Labels\n\n");
+
+        // Check for label image
+        script.append("if (!OCR4Labels.hasLabelImage()) {\n");
+        script.append("    println \"No label image available\"\n");
+        script.append("    return\n");
+        script.append("}\n\n");
+
+        // Run OCR with configuration
+        script.append("def results = OCR4Labels.builder()\n");
+
+        // Page segmentation mode
+        if (selectedPSM != null) {
+            switch (selectedPSM.getMode()) {
+                case SPARSE_TEXT:
+                    script.append("    .sparseText()\n");
+                    break;
+                case AUTO:
+                    script.append("    .autoDetect()\n");
+                    break;
+                case SINGLE_BLOCK:
+                    script.append("    .singleBlock()\n");
+                    break;
+                case SINGLE_LINE:
+                    script.append("    .singleLine()\n");
+                    break;
+                case SINGLE_WORD:
+                    script.append("    .singleWord()\n");
+                    break;
+                default:
+                    script.append("    .sparseText()\n");
+            }
+        }
+
+        // Preprocessing
+        if (enhance) {
+            script.append("    .enhance()\n");
+        } else {
+            script.append("    .noEnhance()\n");
+        }
+
+        if (invert) {
+            script.append("    .invert()\n");
+        }
+
+        // Confidence
+        script.append("    .minConfidence(").append(String.format("%.2f", confidence)).append(")\n");
+        script.append("    .run()\n\n");
+
+        // Apply metadata mappings
+        script.append("// Apply detected text to metadata fields\n");
+        for (Map.Entry<Integer, String> entry : fieldMappings.entrySet()) {
+            int idx = entry.getKey();
+            String key = entry.getValue();
+            script.append("if (results.size() > ").append(idx).append(") {\n");
+            script.append("    OCR4Labels.setMetadataValue(\"").append(key).append("\", results[").append(idx).append("])\n");
+            script.append("}\n");
+        }
+
+        script.append("\nprintln \"Applied \" + results.size() + \" OCR fields\"\n");
+
+        // Add to workflow
+        try {
+            imageData.getHistoryWorkflow().addStep(
+                    new DefaultScriptableWorkflowStep(
+                            "OCR Label Recognition",
+                            script.toString()
+                    )
+            );
+            logger.info("Added OCR workflow step");
+        } catch (Exception e) {
+            logger.warn("Failed to add workflow step: {}", e.getMessage());
         }
     }
 
