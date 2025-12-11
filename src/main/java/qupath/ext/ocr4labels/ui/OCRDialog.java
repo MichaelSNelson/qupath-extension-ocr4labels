@@ -226,8 +226,11 @@ public class OCRDialog {
                 "Try lowering this if text isn't being detected."));
 
         Label confValue = new Label(String.format("%.0f%%", confSlider.getValue()));
-        confSlider.valueProperty().addListener((obs, old, newVal) ->
-                confValue.setText(String.format("%.0f%%", newVal.doubleValue())));
+        confSlider.valueProperty().addListener((obs, old, newVal) -> {
+                confValue.setText(String.format("%.0f%%", newVal.doubleValue()));
+                // Persist the value for next session
+                OCRPreferences.setMinConfidence(newVal.doubleValue() / 100.0);
+        });
 
         // Preprocessing options
         invertCheckBox = new CheckBox("Invert");
