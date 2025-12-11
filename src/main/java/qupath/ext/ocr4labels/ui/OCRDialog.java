@@ -1391,26 +1391,42 @@ public class OCRDialog {
     }
 
     private void addWorkflowStep(Map<Integer, String> fieldMappings) {
-        // Only add workflow step if the selected entry matches the currently open image
+        // Get ImageData for the selected entry to add workflow step
+        ImageData<?> imageData = null;
+
+        // First check if selected entry is the currently open image
         ImageData<?> currentImageData = qupath.getImageData();
-        if (currentImageData == null) return;
+        if (currentImageData != null && selectedEntry != null) {
+            try {
+                var currentServer = currentImageData.getServer();
+                if (currentServer != null) {
+                    var currentUris = currentServer.getURIs();
+                    var entryUris = selectedEntry.getURIs();
+                    String currentUri = currentUris.isEmpty() ? null : currentUris.iterator().next().toString();
+                    String entryUri = entryUris.isEmpty() ? null : entryUris.iterator().next().toString();
 
-        var currentServer = currentImageData.getServer();
-        if (currentServer == null) return;
+                    if (currentUri != null && currentUri.equals(entryUri)) {
+                        // Use the already-open ImageData
+                        imageData = currentImageData;
+                    }
+                }
+            } catch (Exception e) {
+                logger.debug("Error comparing URIs: {}", e.getMessage());
+            }
+        }
 
-        var currentUris = currentServer.getURIs();
-        String currentUri = currentUris.isEmpty() ? null : currentUris.iterator().next().toString();
-
-        try {
-            var entryUris = selectedEntry.getURIs();
-            String entryUri = entryUris.isEmpty() ? null : entryUris.iterator().next().toString();
-
-            if (!currentUri.equals(entryUri)) {
-                // Not the current image - skip workflow step
-                logger.debug("Skipping workflow step - not the current image");
+        // If not the current image, load ImageData from the entry
+        if (imageData == null && selectedEntry != null) {
+            try {
+                imageData = selectedEntry.readImageData();
+            } catch (Exception e) {
+                logger.warn("Could not read ImageData for workflow step: {}", e.getMessage());
                 return;
             }
-        } catch (Exception e) {
+        }
+
+        if (imageData == null) {
+            logger.debug("No ImageData available for workflow step");
             return;
         }
 
@@ -1478,13 +1494,19 @@ public class OCRDialog {
         script.append("\nprintln \"Applied \" + results.size() + \" OCR fields\"\n");
 
         try {
-            currentImageData.getHistoryWorkflow().addStep(
+            imageData.getHistoryWorkflow().addStep(
                     new DefaultScriptableWorkflowStep(
                             "OCR Label Recognition",
                             script.toString()
                     )
             );
-            logger.info("Added OCR workflow step");
+            logger.info("Added OCR workflow step for: {}", selectedEntry.getImageName());
+
+            // Save the ImageData if it's not the currently open image
+            if (imageData != currentImageData) {
+                selectedEntry.saveImageData(imageData);
+                logger.debug("Saved ImageData with workflow step");
+            }
         } catch (Exception e) {
             logger.warn("Failed to add workflow step: {}", e.getMessage());
         }
