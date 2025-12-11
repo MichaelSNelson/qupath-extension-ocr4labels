@@ -101,6 +101,9 @@ public class OCRDialog {
     private OCRTemplate currentTemplate;
     private CheckBox useFixedPositionsCheckBox;
 
+    // Previous field entries for metadata key preservation across slides
+    private List<OCRFieldEntry> previousFieldEntries = new ArrayList<>();
+
     /**
      * Shows the OCR dialog for processing project entries.
      *
@@ -366,6 +369,11 @@ public class OCRDialog {
     private void onEntrySelected(ProjectImageEntry<?> entry) {
         selectedEntry = entry;
 
+        // Save current field entries for metadata key preservation
+        if (!fieldEntries.isEmpty()) {
+            previousFieldEntries = new ArrayList<>(fieldEntries);
+        }
+
         // Clear detected fields but preserve region selection
         fieldEntries.clear();
         currentResult = null;
@@ -578,7 +586,7 @@ public class OCRDialog {
         fieldsTable = new TableView<>(fieldEntries);
         fieldsTable.setEditable(true);
         fieldsTable.setPlaceholder(new Label("Run OCR to detect text fields"));
-        fieldsTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+        fieldsTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
 
         // Text column - flexible width, user can resize
         TableColumn<OCRFieldEntry, String> textCol = new TableColumn<>(resources.getString("column.text"));
@@ -816,7 +824,7 @@ public class OCRDialog {
 
         for (TextBlock block : result.getTextBlocks()) {
             if (block.getType() == TextBlock.BlockType.LINE && !block.isEmpty()) {
-                String suggestedKey = prefix + "field_" + index;
+                String suggestedKey = findMatchingMetadataKey(block.getBoundingBox(), prefix + "field_" + index);
                 OCRFieldEntry entry = new OCRFieldEntry(
                         block.getText(),
                         suggestedKey,
@@ -832,7 +840,7 @@ public class OCRDialog {
         if (fieldEntries.isEmpty()) {
             for (TextBlock block : result.getTextBlocks()) {
                 if (block.getType() == TextBlock.BlockType.WORD && !block.isEmpty()) {
-                    String suggestedKey = prefix + "field_" + index;
+                    String suggestedKey = findMatchingMetadataKey(block.getBoundingBox(), prefix + "field_" + index);
                     OCRFieldEntry entry = new OCRFieldEntry(
                             block.getText(),
                             suggestedKey,
@@ -846,6 +854,71 @@ public class OCRDialog {
         }
 
         updateMetadataPreview();
+    }
+
+    /**
+     * Finds a metadata key from previous field entries if the bounding box overlaps by at least 50%.
+     * This preserves user-defined metadata keys when switching between slides with similar label layouts.
+     *
+     * @param newBox The bounding box of the new field
+     * @param defaultKey The default key to use if no match is found
+     * @return The matched metadata key or the default key
+     */
+    private String findMatchingMetadataKey(BoundingBox newBox, String defaultKey) {
+        if (newBox == null || previousFieldEntries.isEmpty()) {
+            return defaultKey;
+        }
+
+        // Normalize bounding boxes to 0-1 range for comparison
+        double newX = newBox.getX();
+        double newY = newBox.getY();
+        double newW = newBox.getWidth();
+        double newH = newBox.getHeight();
+
+        // If we have image dimensions, normalize; otherwise compare absolute pixels
+        double imgWidth = labelImage != null ? labelImage.getWidth() : 1.0;
+        double imgHeight = labelImage != null ? labelImage.getHeight() : 1.0;
+
+        double newNormX = newX / imgWidth;
+        double newNormY = newY / imgHeight;
+        double newNormW = newW / imgWidth;
+        double newNormH = newH / imgHeight;
+        double newArea = newNormW * newNormH;
+
+        for (OCRFieldEntry prevEntry : previousFieldEntries) {
+            BoundingBox prevBox = prevEntry.getBoundingBox();
+            if (prevBox == null) continue;
+
+            double prevNormX = prevBox.getX() / imgWidth;
+            double prevNormY = prevBox.getY() / imgHeight;
+            double prevNormW = prevBox.getWidth() / imgWidth;
+            double prevNormH = prevBox.getHeight() / imgHeight;
+            double prevArea = prevNormW * prevNormH;
+
+            // Calculate intersection
+            double interX1 = Math.max(newNormX, prevNormX);
+            double interY1 = Math.max(newNormY, prevNormY);
+            double interX2 = Math.min(newNormX + newNormW, prevNormX + prevNormW);
+            double interY2 = Math.min(newNormY + newNormH, prevNormY + prevNormH);
+
+            double interW = Math.max(0, interX2 - interX1);
+            double interH = Math.max(0, interY2 - interY1);
+            double interArea = interW * interH;
+
+            // Check if overlap is at least 50% of the smaller box
+            double minArea = Math.min(newArea, prevArea);
+            if (minArea > 0 && interArea / minArea >= 0.5) {
+                String prevKey = prevEntry.getMetadataKey();
+                // Only reuse non-default keys (user has customized them)
+                if (prevKey != null && !prevKey.isEmpty()) {
+                    logger.debug("Reusing metadata key '{}' based on {}% bounding box overlap",
+                            prevKey, String.format("%.0f", (interArea / minArea) * 100));
+                    return prevKey;
+                }
+            }
+        }
+
+        return defaultKey;
     }
 
     private void drawBoundingBoxes() {
