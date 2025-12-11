@@ -631,6 +631,20 @@ public class OCRDialog {
         Button addButton = new Button(resources.getString("button.addField"));
         addButton.setOnAction(e -> addManualField());
 
+        Button removeButton = new Button("Remove");
+        removeButton.setTooltip(new Tooltip("Remove the selected field from the list"));
+        removeButton.setOnAction(e -> {
+            OCRFieldEntry selected = fieldsTable.getSelectionModel().getSelectedItem();
+            if (selected != null) {
+                fieldEntries.remove(selected);
+                updateMetadataPreview();
+                drawBoundingBoxes();
+            }
+        });
+        // Disable when nothing is selected
+        removeButton.disableProperty().bind(
+                fieldsTable.getSelectionModel().selectedItemProperty().isNull());
+
         Button clearButton = new Button(resources.getString("button.clearAll"));
         clearButton.setOnAction(e -> {
             fieldEntries.clear();
@@ -638,7 +652,7 @@ public class OCRDialog {
             drawBoundingBoxes();
         });
 
-        buttonBar.getChildren().addAll(addButton, clearButton);
+        buttonBar.getChildren().addAll(addButton, removeButton, clearButton);
 
         // Template toolbar
         HBox templateBar = new HBox(10);
