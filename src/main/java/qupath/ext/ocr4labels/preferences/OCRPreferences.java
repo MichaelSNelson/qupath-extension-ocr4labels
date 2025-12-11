@@ -29,6 +29,7 @@ public class OCRPreferences {
     private static final int DEFAULT_PAGE_SEG_MODE = 11; // PSM_SPARSE_TEXT (best for labels)
     private static final String DEFAULT_METADATA_PREFIX = "OCR_";
     private static final String DEFAULT_LABEL_IMAGE_KEYWORDS = "label,barcode";
+    private static final boolean DEFAULT_AUTO_RUN_ON_ENTRY_SWITCH = false;
 
     // Properties
     private static StringProperty languageProperty;
@@ -40,6 +41,7 @@ public class OCRPreferences {
     private static IntegerProperty pageSegModeProperty;
     private static StringProperty metadataPrefixProperty;
     private static StringProperty labelImageKeywordsProperty;
+    private static BooleanProperty autoRunOnEntrySwitchProperty;
 
     // Window size properties for remembering dialog sizes
     private static DoubleProperty dialogWidthProperty;
@@ -83,6 +85,9 @@ public class OCRPreferences {
 
         labelImageKeywordsProperty = PathPrefs.createPersistentPreference(
                 PREFIX + "labelImageKeywords", DEFAULT_LABEL_IMAGE_KEYWORDS);
+
+        autoRunOnEntrySwitchProperty = PathPrefs.createPersistentPreference(
+                PREFIX + "autoRunOnEntrySwitch", DEFAULT_AUTO_RUN_ON_ENTRY_SWITCH);
 
         // Dialog size properties
         dialogWidthProperty = PathPrefs.createPersistentPreference(
@@ -230,6 +235,20 @@ public class OCRPreferences {
 
     public static StringProperty labelImageKeywordsProperty() {
         return labelImageKeywordsProperty;
+    }
+
+    public static BooleanProperty autoRunOnEntrySwitchProperty() {
+        return autoRunOnEntrySwitchProperty;
+    }
+
+    public static boolean isAutoRunOnEntrySwitch() {
+        return autoRunOnEntrySwitchProperty != null ? autoRunOnEntrySwitchProperty.get() : DEFAULT_AUTO_RUN_ON_ENTRY_SWITCH;
+    }
+
+    public static void setAutoRunOnEntrySwitch(boolean autoRun) {
+        if (autoRunOnEntrySwitchProperty != null) {
+            autoRunOnEntrySwitchProperty.set(autoRun);
+        }
     }
 
     public static double getDialogWidth() {

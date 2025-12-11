@@ -27,21 +27,25 @@ import qupath.ext.ocr4labels.model.OCRResult;
 import qupath.ext.ocr4labels.model.TextBlock;
 import qupath.ext.ocr4labels.preferences.OCRPreferences;
 import qupath.ext.ocr4labels.service.OCREngine;
+import qupath.ext.ocr4labels.utilities.LabelImageUtility;
 import qupath.ext.ocr4labels.utilities.MetadataKeyValidator;
 import qupath.ext.ocr4labels.utilities.OCRMetadataManager;
 import qupath.fx.dialogs.Dialogs;
 import qupath.lib.gui.QuPathGUI;
+import qupath.lib.images.ImageData;
 import qupath.lib.plugins.workflow.DefaultScriptableWorkflowStep;
 import qupath.lib.projects.Project;
-import qupath.lib.scripting.QP;
+import qupath.lib.projects.ProjectImageEntry;
 
 import java.awt.image.BufferedImage;
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.ResourceBundle;
 
 /**
  * Main dialog for OCR processing and field labeling.
+ * Supports navigating through all project entries and applying OCR results as metadata.
  */
 public class OCRDialog {
 
@@ -51,16 +55,25 @@ public class OCRDialog {
             ResourceBundle.getBundle("qupath.ext.ocr4labels.ui.strings");
 
     private final QuPathGUI qupath;
-    private final BufferedImage labelImage;
     private final OCREngine ocrEngine;
+    private final Project<?> project;
+
+    // Current state
+    private ProjectImageEntry<?> selectedEntry;
+    private BufferedImage labelImage;
 
     private Stage stage;
     private ImageView imageView;
     private Canvas overlayCanvas;
+    private StackPane imageStack;
+    private ScrollPane imageScrollPane;
+    private Label noLabelLabel;
     private TableView<OCRFieldEntry> fieldsTable;
     private ObservableList<OCRFieldEntry> fieldEntries;
     private TextArea metadataPreview;
     private ProgressIndicator progressIndicator;
+    private ListView<ProjectImageEntry<?>> entryListView;
+    private Button runOCRButton;
 
     private OCRResult currentResult;
     private int selectedIndex = -1;
@@ -80,16 +93,32 @@ public class OCRDialog {
     private Button scanRegionButton;
 
     /**
-     * Shows the OCR dialog for a label image.
+     * Shows the OCR dialog for processing project entries.
+     *
+     * @param qupath The QuPath GUI instance
+     * @param ocrEngine The OCR engine to use
      */
-    public static void show(QuPathGUI qupath, BufferedImage labelImage, OCREngine ocrEngine) {
-        OCRDialog dialog = new OCRDialog(qupath, labelImage, ocrEngine);
+    public static void show(QuPathGUI qupath, OCREngine ocrEngine) {
+        Project<?> project = qupath.getProject();
+        if (project == null) {
+            Dialogs.showWarningNotification("No Project",
+                    "Please open a project first to use the OCR dialog.");
+            return;
+        }
+
+        if (project.getImageList().isEmpty()) {
+            Dialogs.showWarningNotification("Empty Project",
+                    "The project has no images. Add images to the project first.");
+            return;
+        }
+
+        OCRDialog dialog = new OCRDialog(qupath, project, ocrEngine);
         dialog.showDialog();
     }
 
-    private OCRDialog(QuPathGUI qupath, BufferedImage labelImage, OCREngine ocrEngine) {
+    private OCRDialog(QuPathGUI qupath, Project<?> project, OCREngine ocrEngine) {
         this.qupath = qupath;
-        this.labelImage = labelImage;
+        this.project = project;
         this.ocrEngine = ocrEngine;
         this.fieldEntries = FXCollections.observableArrayList();
     }
@@ -116,13 +145,47 @@ public class OCRDialog {
 
         stage.show();
 
-        // Auto-run OCR when dialog opens
-        Platform.runLater(this::runOCR);
+        // Select initial entry (current image if available, otherwise none)
+        selectInitialEntry();
+    }
+
+    /**
+     * Selects the initial entry based on the currently open image in QuPath.
+     */
+    private void selectInitialEntry() {
+        ImageData<?> currentImageData = qupath.getImageData();
+        if (currentImageData == null) {
+            // No image open - show empty state
+            return;
+        }
+
+        // Find the project entry matching the current image
+        var currentServer = currentImageData.getServer();
+        if (currentServer == null) return;
+
+        var currentUris = currentServer.getURIs();
+        String currentUri = currentUris.isEmpty() ? null : currentUris.iterator().next().toString();
+        if (currentUri == null) return;
+
+        for (ProjectImageEntry<?> entry : project.getImageList()) {
+            try {
+                var entryUris = entry.getURIs();
+                String entryUri = entryUris.isEmpty() ? null : entryUris.iterator().next().toString();
+                if (currentUri.equals(entryUri)) {
+                    entryListView.getSelectionModel().select(entry);
+                    return;
+                }
+            } catch (Exception e) {
+                // Continue searching
+            }
+        }
     }
 
     private ToolBar createToolbar() {
-        Button runOCRButton = new Button(resources.getString("button.runOCR"));
+        runOCRButton = new Button(resources.getString("button.runOCR"));
         runOCRButton.setOnAction(e -> runOCR());
+        // Highlight the Run OCR button to draw attention
+        runOCRButton.setStyle("-fx-font-weight: bold; -fx-background-color: #e8f4e8;");
 
         progressIndicator = new ProgressIndicator();
         progressIndicator.setMaxSize(24, 24);
@@ -132,7 +195,7 @@ public class OCRDialog {
         Label psmLabel = new Label("Mode:");
         psmCombo = new ComboBox<>();
         psmCombo.getItems().addAll(PSMOption.values());
-        psmCombo.setValue(PSMOption.SPARSE_TEXT);  // Best for scattered text on labels
+        psmCombo.setValue(PSMOption.SPARSE_TEXT);
         psmCombo.setTooltip(new Tooltip(
                 "How to search for text on the label:\n\n" +
                 "Sparse Text: Best for labels - finds text scattered across the image\n" +
@@ -140,7 +203,7 @@ public class OCRDialog {
                 "Single Line/Word: For very simple labels\n\n" +
                 "Try different modes if text isn't detected."));
 
-        // Confidence slider - important setting, placed prominently
+        // Confidence slider
         Label confLabel = new Label("Min Conf:");
         confSlider = new Slider(0, 100, OCRPreferences.getMinConfidence() * 100);
         confSlider.setPrefWidth(100);
@@ -153,9 +216,8 @@ public class OCRDialog {
                 "Try lowering this if text isn't being detected."));
 
         Label confValue = new Label(String.format("%.0f%%", confSlider.getValue()));
-        confSlider.valueProperty().addListener((obs, old, newVal) -> {
-            confValue.setText(String.format("%.0f%%", newVal.doubleValue()));
-        });
+        confSlider.valueProperty().addListener((obs, old, newVal) ->
+                confValue.setText(String.format("%.0f%%", newVal.doubleValue())));
 
         // Preprocessing options
         invertCheckBox = new CheckBox("Invert");
@@ -181,7 +243,6 @@ public class OCRDialog {
         selectRegionButton.setOnAction(e -> {
             regionSelectionMode = selectRegionButton.isSelected();
             if (!regionSelectionMode) {
-                // Clear selection when exiting selection mode
                 hasSelection = false;
                 drawBoundingBoxes();
             }
@@ -216,18 +277,143 @@ public class OCRDialog {
     }
 
     private SplitPane createMainContent() {
-        SplitPane splitPane = new SplitPane();
+        SplitPane mainSplit = new SplitPane();
 
-        // Left panel: Image display
+        // Left panel: Project entry list
+        VBox entryListPanel = createEntryListPanel();
+
+        // Right panel: Image and Fields stacked vertically
+        SplitPane rightSplit = new SplitPane();
+        rightSplit.setOrientation(javafx.geometry.Orientation.VERTICAL);
+
         VBox imagePanel = createImagePanel();
-
-        // Right panel: Fields table and preview
         VBox fieldsPanel = createFieldsPanel();
 
-        splitPane.getItems().addAll(imagePanel, fieldsPanel);
-        splitPane.setDividerPositions(0.5);
+        rightSplit.getItems().addAll(imagePanel, fieldsPanel);
+        rightSplit.setDividerPositions(0.55);
 
-        return splitPane;
+        mainSplit.getItems().addAll(entryListPanel, rightSplit);
+        mainSplit.setDividerPositions(0.2);
+
+        return mainSplit;
+    }
+
+    /**
+     * Creates the project entry list panel.
+     */
+    private VBox createEntryListPanel() {
+        VBox panel = new VBox(5);
+        panel.setPadding(new Insets(10));
+        panel.setMinWidth(150);
+        panel.setPrefWidth(200);
+
+        Label titleLabel = new Label("Project Images");
+        titleLabel.setStyle("-fx-font-weight: bold;");
+
+        // Create ListView with project entries
+        entryListView = new ListView<>();
+        entryListView.getItems().addAll(project.getImageList());
+
+        // Custom cell factory to show entry names
+        entryListView.setCellFactory(lv -> new ListCell<>() {
+            @Override
+            protected void updateItem(ProjectImageEntry<?> entry, boolean empty) {
+                super.updateItem(entry, empty);
+                if (empty || entry == null) {
+                    setText(null);
+                    setTooltip(null);
+                } else {
+                    String name = entry.getImageName();
+                    setText(name);
+                    setTooltip(new Tooltip(name));
+                }
+            }
+        });
+
+        // Handle selection changes
+        entryListView.getSelectionModel().selectedItemProperty().addListener((obs, oldEntry, newEntry) -> {
+            if (newEntry != null) {
+                onEntrySelected(newEntry);
+            }
+        });
+
+        VBox.setVgrow(entryListView, Priority.ALWAYS);
+
+        // Entry count label
+        Label countLabel = new Label(String.format("%d images", project.getImageList().size()));
+        countLabel.setStyle("-fx-font-size: 10px; -fx-text-fill: gray;");
+
+        panel.getChildren().addAll(titleLabel, entryListView, countLabel);
+        return panel;
+    }
+
+    /**
+     * Handles selection of a project entry from the list.
+     */
+    private void onEntrySelected(ProjectImageEntry<?> entry) {
+        selectedEntry = entry;
+
+        // Clear detected fields but preserve region selection
+        fieldEntries.clear();
+        currentResult = null;
+
+        // Load label image for the entry
+        loadLabelImageForEntry(entry);
+
+        // Update UI
+        updateMetadataPreview();
+        drawBoundingBoxes();
+
+        // Auto-run OCR if enabled and we have a label image
+        if (labelImage != null && OCRPreferences.isAutoRunOnEntrySwitch()) {
+            Platform.runLater(this::runOCR);
+        }
+    }
+
+    /**
+     * Loads the label image for a project entry.
+     */
+    private void loadLabelImageForEntry(ProjectImageEntry<?> entry) {
+        try {
+            ImageData<?> imageData = entry.readImageData();
+            if (imageData != null && LabelImageUtility.isLabelImageAvailable(imageData)) {
+                labelImage = LabelImageUtility.retrieveLabelImage(imageData);
+                updateImageDisplay();
+            } else {
+                labelImage = null;
+                showNoLabelPlaceholder();
+            }
+        } catch (IOException e) {
+            logger.error("Failed to load image data for entry: {}", entry.getImageName(), e);
+            labelImage = null;
+            showNoLabelPlaceholder();
+        }
+    }
+
+    /**
+     * Updates the image display with the current label image.
+     */
+    private void updateImageDisplay() {
+        if (labelImage != null) {
+            Image fxImage = SwingFXUtils.toFXImage(labelImage, null);
+            imageView.setImage(fxImage);
+            imageView.setVisible(true);
+            overlayCanvas.setVisible(true);
+            noLabelLabel.setVisible(false);
+            Platform.runLater(this::drawBoundingBoxes);
+        } else {
+            showNoLabelPlaceholder();
+        }
+    }
+
+    /**
+     * Shows a placeholder when no label image is available.
+     */
+    private void showNoLabelPlaceholder() {
+        imageView.setImage(null);
+        imageView.setVisible(false);
+        overlayCanvas.setVisible(false);
+        noLabelLabel.setVisible(true);
     }
 
     private VBox createImagePanel() {
@@ -238,19 +424,21 @@ public class OCRDialog {
         titleLabel.setStyle("-fx-font-weight: bold;");
 
         // Image display with overlay
-        StackPane imageStack = new StackPane();
+        imageStack = new StackPane();
 
         imageView = new ImageView();
         imageView.setPreserveRatio(true);
 
-        // Convert BufferedImage to JavaFX Image
-        Image fxImage = SwingFXUtils.toFXImage(labelImage, null);
-        imageView.setImage(fxImage);
+        // Placeholder for no label
+        noLabelLabel = new Label("No Label Found\n\nSelect an image from the list,\nor this image has no label.");
+        noLabelLabel.setStyle("-fx-font-size: 14px; -fx-text-fill: gray; -fx-text-alignment: center;");
+        noLabelLabel.setVisible(true);
 
         // Overlay canvas for bounding boxes and selection
         overlayCanvas = new Canvas();
+        overlayCanvas.setVisible(false);
 
-        // Mouse handlers for region selection
+        // Mouse handlers for region selection and refresh
         overlayCanvas.setOnMousePressed(e -> {
             if (regionSelectionMode) {
                 selectionStartX = e.getX();
@@ -258,6 +446,8 @@ public class OCRDialog {
                 selectionEndX = e.getX();
                 selectionEndY = e.getY();
                 hasSelection = false;
+                drawBoundingBoxes();
+            } else {
                 drawBoundingBoxes();
             }
         });
@@ -275,7 +465,6 @@ public class OCRDialog {
             if (regionSelectionMode && hasSelection) {
                 selectionEndX = e.getX();
                 selectionEndY = e.getY();
-                // Ensure we have a valid selection (not just a click)
                 double width = Math.abs(selectionEndX - selectionStartX);
                 double height = Math.abs(selectionEndY - selectionStartY);
                 if (width < 5 || height < 5) {
@@ -286,19 +475,25 @@ public class OCRDialog {
             }
         });
 
-        imageStack.getChildren().addAll(imageView, overlayCanvas);
+        imageStack.getChildren().addAll(noLabelLabel, imageView, overlayCanvas);
 
         // Bind canvas size to image size
         imageView.fitWidthProperty().addListener((obs, old, newVal) -> updateCanvasSize());
         imageView.fitHeightProperty().addListener((obs, old, newVal) -> updateCanvasSize());
 
-        ScrollPane scrollPane = new ScrollPane(imageStack);
-        scrollPane.setFitToWidth(true);
-        scrollPane.setFitToHeight(true);
-        VBox.setVgrow(scrollPane, Priority.ALWAYS);
+        imageScrollPane = new ScrollPane(imageStack);
+        imageScrollPane.setFitToWidth(true);
+        imageScrollPane.setFitToHeight(true);
+        VBox.setVgrow(imageScrollPane, Priority.ALWAYS);
 
         // Make image fit the scroll pane
-        imageView.fitWidthProperty().bind(scrollPane.widthProperty().subtract(20));
+        imageView.fitWidthProperty().bind(imageScrollPane.widthProperty().subtract(20));
+
+        // Auto-refresh bounding boxes when scroll pane is resized
+        imageScrollPane.widthProperty().addListener((obs, old, newVal) ->
+                Platform.runLater(this::drawBoundingBoxes));
+        imageScrollPane.heightProperty().addListener((obs, old, newVal) ->
+                Platform.runLater(this::drawBoundingBoxes));
 
         // Zoom controls
         HBox zoomControls = new HBox(10);
@@ -306,22 +501,22 @@ public class OCRDialog {
 
         Button fitButton = new Button("Fit");
         fitButton.setOnAction(e -> {
-            imageView.fitWidthProperty().bind(scrollPane.widthProperty().subtract(20));
-            // Redraw bounding boxes after view change
+            imageView.fitWidthProperty().bind(imageScrollPane.widthProperty().subtract(20));
             Platform.runLater(this::drawBoundingBoxes);
         });
 
         Button actualButton = new Button("100%");
         actualButton.setOnAction(e -> {
             imageView.fitWidthProperty().unbind();
-            imageView.setFitWidth(labelImage.getWidth());
-            // Redraw bounding boxes after view change
+            if (labelImage != null) {
+                imageView.setFitWidth(labelImage.getWidth());
+            }
             Platform.runLater(this::drawBoundingBoxes);
         });
 
         zoomControls.getChildren().addAll(fitButton, actualButton);
 
-        panel.getChildren().addAll(titleLabel, scrollPane, zoomControls);
+        panel.getChildren().addAll(titleLabel, imageScrollPane, zoomControls);
         return panel;
     }
 
@@ -336,6 +531,7 @@ public class OCRDialog {
         fieldsTable = new TableView<>(fieldEntries);
         fieldsTable.setEditable(true);
         fieldsTable.setPlaceholder(new Label("Run OCR to detect text fields"));
+        fieldsTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
 
         // Text column
         TableColumn<OCRFieldEntry, String> textCol = new TableColumn<>(resources.getString("column.text"));
@@ -345,7 +541,7 @@ public class OCRDialog {
             e.getRowValue().setText(e.getNewValue());
             updateMetadataPreview();
         });
-        textCol.setPrefWidth(200);
+        textCol.setMinWidth(100);
 
         // Metadata key column
         TableColumn<OCRFieldEntry, String> keyCol = new TableColumn<>(resources.getString("column.metadataKey"));
@@ -362,13 +558,15 @@ public class OCRDialog {
             }
             updateMetadataPreview();
         });
-        keyCol.setPrefWidth(150);
+        keyCol.setMinWidth(120);
+        keyCol.setMaxWidth(150);
 
         // Confidence column
-        TableColumn<OCRFieldEntry, String> confCol = new TableColumn<>("Conf.");
+        TableColumn<OCRFieldEntry, String> confCol = new TableColumn<>("Confidence");
         confCol.setCellValueFactory(data -> new SimpleStringProperty(
                 String.format("%.0f%%", data.getValue().getConfidence() * 100)));
-        confCol.setPrefWidth(50);
+        confCol.setMinWidth(70);
+        confCol.setMaxWidth(80);
 
         fieldsTable.getColumns().addAll(textCol, keyCol, confCol);
         VBox.setVgrow(fieldsTable, Priority.ALWAYS);
@@ -401,7 +599,7 @@ public class OCRDialog {
 
         metadataPreview = new TextArea();
         metadataPreview.setEditable(false);
-        metadataPreview.setPrefRowCount(5);
+        metadataPreview.setPrefRowCount(3);
         metadataPreview.setStyle("-fx-font-family: monospace;");
 
         panel.getChildren().addAll(titleLabel, fieldsTable, buttonBar, previewLabel, metadataPreview);
@@ -412,6 +610,17 @@ public class OCRDialog {
         HBox buttonBar = new HBox(15);
         buttonBar.setPadding(new Insets(10));
         buttonBar.setAlignment(Pos.CENTER_RIGHT);
+
+        // Show selected entry name
+        Label selectedLabel = new Label();
+        selectedLabel.setStyle("-fx-font-size: 11px; -fx-text-fill: gray;");
+        entryListView.getSelectionModel().selectedItemProperty().addListener((obs, old, newVal) -> {
+            if (newVal != null) {
+                selectedLabel.setText("Applying to: " + newVal.getImageName());
+            } else {
+                selectedLabel.setText("");
+            }
+        });
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
@@ -424,14 +633,19 @@ public class OCRDialog {
         cancelButton.setCancelButton(true);
         cancelButton.setOnAction(e -> stage.close());
 
-        buttonBar.getChildren().addAll(spacer, applyButton, cancelButton);
+        buttonBar.getChildren().addAll(selectedLabel, spacer, applyButton, cancelButton);
         return buttonBar;
     }
 
     private void runOCR() {
+        if (labelImage == null) {
+            Dialogs.showWarningNotification("No Label Image",
+                    "Please select an image with a label first.");
+            return;
+        }
+
         progressIndicator.setVisible(true);
 
-        // Build configuration from toolbar settings
         PSMOption selectedPSM = psmCombo.getValue();
         OCRConfiguration.PageSegMode psm = selectedPSM != null ? selectedPSM.getMode() : OCRConfiguration.PageSegMode.AUTO;
 
@@ -445,7 +659,6 @@ public class OCRDialog {
                 .enablePreprocessing(true)
                 .build();
 
-        // Preprocess the image based on checkbox settings
         BufferedImage imageToProcess = preprocessForOCR(labelImage);
 
         OCRController.getInstance().performOCRAsync(imageToProcess, config)
@@ -469,23 +682,14 @@ public class OCRDialog {
                 });
     }
 
-    /**
-     * Preprocesses the image based on dialog settings.
-     */
     private BufferedImage preprocessForOCR(BufferedImage source) {
         BufferedImage result = source;
-
-        // Invert if checkbox selected
         if (invertCheckBox.isSelected()) {
             result = invertImage(result);
         }
-
         return result;
     }
 
-    /**
-     * Inverts image colors.
-     */
     private BufferedImage invertImage(BufferedImage source) {
         BufferedImage inverted = new BufferedImage(
                 source.getWidth(), source.getHeight(), BufferedImage.TYPE_INT_RGB);
@@ -544,7 +748,7 @@ public class OCRDialog {
     }
 
     private void drawBoundingBoxes() {
-        if (overlayCanvas == null) return;
+        if (overlayCanvas == null || labelImage == null) return;
 
         updateCanvasSize();
 
@@ -568,13 +772,11 @@ public class OCRDialog {
             BoundingBox bbox = entry.getBoundingBox();
             if (bbox == null) continue;
 
-            // Scale coordinates
             double x = bbox.getX() * scale;
             double y = bbox.getY() * scale;
             double w = bbox.getWidth() * scale;
             double h = bbox.getHeight() * scale;
 
-            // Draw box
             if (index == selectedIndex) {
                 gc.setStroke(Color.YELLOW);
                 gc.setLineWidth(3);
@@ -584,7 +786,6 @@ public class OCRDialog {
             }
             gc.strokeRect(x, y, w, h);
 
-            // Draw label
             gc.setFill(Color.rgb(0, 0, 0, 0.7));
             gc.fillRect(x, y - 16, Math.min(w, 60), 16);
             gc.setFill(Color.WHITE);
@@ -594,9 +795,6 @@ public class OCRDialog {
         }
     }
 
-    /**
-     * Draws the selection rectangle on the canvas.
-     */
     private void drawSelectionRectangle(GraphicsContext gc) {
         if (!hasSelection && !regionSelectionMode) return;
 
@@ -607,47 +805,36 @@ public class OCRDialog {
 
         if (w < 2 || h < 2) return;
 
-        // Semi-transparent fill
         gc.setFill(Color.rgb(0, 120, 255, 0.2));
         gc.fillRect(x, y, w, h);
 
-        // Dashed border
         gc.setStroke(Color.rgb(0, 120, 255));
         gc.setLineWidth(2);
         gc.setLineDashes(5, 5);
         gc.strokeRect(x, y, w, h);
         gc.setLineDashes(null);
 
-        // Label
         gc.setFill(Color.rgb(0, 120, 255, 0.9));
         gc.fillRect(x, y - 18, 80, 18);
         gc.setFill(Color.WHITE);
         gc.fillText("Selection", x + 4, y - 4);
     }
 
-    /**
-     * Updates the enabled state of the Scan Region button.
-     */
     private void updateScanRegionButton() {
-        scanRegionButton.setDisable(!hasSelection);
+        scanRegionButton.setDisable(!hasSelection || labelImage == null);
     }
 
-    /**
-     * Runs OCR on the selected region with very low confidence threshold.
-     */
     private void scanSelectedRegion() {
-        if (!hasSelection) {
+        if (!hasSelection || labelImage == null) {
             Dialogs.showWarningNotification("No Selection",
                     "Please draw a rectangle on the image first.");
             return;
         }
 
-        // Calculate scale factor to convert canvas coords to image coords
         double scaleX = imageView.getBoundsInLocal().getWidth() / labelImage.getWidth();
         double scaleY = imageView.getBoundsInLocal().getHeight() / labelImage.getHeight();
         double scale = Math.min(scaleX, scaleY);
 
-        // Convert selection to image coordinates
         int imgX = (int) Math.max(0, Math.min(selectionStartX, selectionEndX) / scale);
         int imgY = (int) Math.max(0, Math.min(selectionStartY, selectionEndY) / scale);
         int imgW = (int) Math.min(labelImage.getWidth() - imgX, Math.abs(selectionEndX - selectionStartX) / scale);
@@ -661,28 +848,24 @@ public class OCRDialog {
 
         logger.info("Scanning region: x={}, y={}, w={}, h={}", imgX, imgY, imgW, imgH);
 
-        // Extract the region from the image
         BufferedImage regionImage = labelImage.getSubimage(imgX, imgY, imgW, imgH);
 
-        // Apply inversion if checkbox selected
         if (invertCheckBox.isSelected()) {
             regionImage = invertImage(regionImage);
         }
 
         progressIndicator.setVisible(true);
 
-        // Use very aggressive settings for the region scan
         OCRConfiguration config = OCRConfiguration.builder()
                 .pageSegMode(OCRConfiguration.PageSegMode.SPARSE_TEXT)
                 .language(OCRPreferences.getLanguage())
-                .minConfidence(0.1)  // Very low confidence for difficult text
+                .minConfidence(0.1)
                 .autoRotate(OCRPreferences.isAutoRotate())
                 .detectOrientation(OCRPreferences.isDetectOrientation())
                 .enhanceContrast(thresholdCheckBox.isSelected())
                 .enablePreprocessing(true)
                 .build();
 
-        // Store the region offset for bounding box adjustment
         final int offsetX = imgX;
         final int offsetY = imgY;
 
@@ -691,7 +874,6 @@ public class OCRDialog {
                     progressIndicator.setVisible(false);
 
                     if (result.getBlockCount() == 0) {
-                        // Try with different modes
                         Dialogs.showInfoNotification("Region Scan Complete",
                                 "No text detected in the selected region.\n\n" +
                                 "Try:\n" +
@@ -699,14 +881,12 @@ public class OCRDialog {
                                 "- Toggling the Invert checkbox\n" +
                                 "- Making sure the text is clearly visible");
                     } else {
-                        // Add detected fields with adjusted bounding boxes
                         addRegionResults(result, offsetX, offsetY);
                         Dialogs.showInfoNotification("Region Scan Complete",
                                 String.format("Found %d text blocks in the selected region.",
                                         result.getBlockCount()));
                     }
 
-                    // Clear selection mode
                     selectRegionButton.setSelected(false);
                     regionSelectionMode = false;
                     hasSelection = false;
@@ -722,9 +902,6 @@ public class OCRDialog {
                 });
     }
 
-    /**
-     * Adds OCR results from a region scan, adjusting bounding boxes for the offset.
-     */
     private void addRegionResults(OCRResult result, int offsetX, int offsetY) {
         String prefix = OCRPreferences.getMetadataPrefix();
         int startIndex = fieldEntries.size();
@@ -733,7 +910,6 @@ public class OCRDialog {
             if (block.getType() == TextBlock.BlockType.LINE && !block.isEmpty()) {
                 String suggestedKey = prefix + "region_" + startIndex;
 
-                // Adjust bounding box for the region offset
                 BoundingBox originalBox = block.getBoundingBox();
                 BoundingBox adjustedBox = null;
                 if (originalBox != null) {
@@ -821,10 +997,15 @@ public class OCRDialog {
     }
 
     private void applyMetadata() {
-        var projectEntry = QP.getProjectEntry();
-        if (projectEntry == null) {
-            Dialogs.showWarningNotification("No Project Entry",
-                    "Cannot apply metadata - no project entry is available.");
+        if (selectedEntry == null) {
+            Dialogs.showWarningNotification("No Image Selected",
+                    "Please select an image from the project list.");
+            return;
+        }
+
+        if (labelImage == null) {
+            Dialogs.showWarningNotification("No Label Image",
+                    "The selected image has no label. Cannot apply OCR metadata.");
             return;
         }
 
@@ -852,34 +1033,46 @@ public class OCRDialog {
             return;
         }
 
-        Project<?> project = qupath.getProject();
-        int count = OCRMetadataManager.setMetadataBatch(projectEntry, metadata, project);
+        int count = OCRMetadataManager.setMetadataBatch(selectedEntry, metadata, project);
 
         if (count > 0) {
-            // Add workflow step for reproducibility
+            // Add workflow step if this is the currently open image
             addWorkflowStep(fieldMappings);
 
             Dialogs.showInfoNotification("Metadata Applied",
-                    String.format("Successfully applied %d metadata fields.", count));
-            stage.close();
+                    String.format("Applied %d metadata fields to: %s", count, selectedEntry.getImageName()));
+
+            // Don't close - allow user to continue with other images
         } else {
             Dialogs.showErrorMessage("Apply Failed",
                     "Failed to apply metadata. Check the log for details.");
         }
     }
 
-    /**
-     * Adds a workflow step to the current image's history.
-     * This allows the OCR operation to be reproduced via script.
-     */
     private void addWorkflowStep(Map<Integer, String> fieldMappings) {
-        var imageData = qupath.getImageData();
-        if (imageData == null) {
-            logger.debug("No image data - skipping workflow step");
+        // Only add workflow step if the selected entry matches the currently open image
+        ImageData<?> currentImageData = qupath.getImageData();
+        if (currentImageData == null) return;
+
+        var currentServer = currentImageData.getServer();
+        if (currentServer == null) return;
+
+        var currentUris = currentServer.getURIs();
+        String currentUri = currentUris.isEmpty() ? null : currentUris.iterator().next().toString();
+
+        try {
+            var entryUris = selectedEntry.getURIs();
+            String entryUri = entryUris.isEmpty() ? null : entryUris.iterator().next().toString();
+
+            if (!currentUri.equals(entryUri)) {
+                // Not the current image - skip workflow step
+                logger.debug("Skipping workflow step - not the current image");
+                return;
+            }
+        } catch (Exception e) {
             return;
         }
 
-        // Build configuration string based on current settings
         PSMOption selectedPSM = psmCombo.getValue();
         boolean invert = invertCheckBox.isSelected();
         boolean enhance = thresholdCheckBox.isSelected();
@@ -890,16 +1083,13 @@ public class OCRDialog {
         script.append("// Run this script to reproduce OCR results on similar images\n");
         script.append("import qupath.ext.ocr4labels.OCR4Labels\n\n");
 
-        // Check for label image
         script.append("if (!OCR4Labels.hasLabelImage()) {\n");
         script.append("    println \"No label image available\"\n");
         script.append("    return\n");
         script.append("}\n\n");
 
-        // Run OCR with configuration
         script.append("def results = OCR4Labels.builder()\n");
 
-        // Page segmentation mode
         if (selectedPSM != null) {
             switch (selectedPSM.getMode()) {
                 case SPARSE_TEXT:
@@ -922,7 +1112,6 @@ public class OCRDialog {
             }
         }
 
-        // Preprocessing
         if (enhance) {
             script.append("    .enhance()\n");
         } else {
@@ -933,11 +1122,9 @@ public class OCRDialog {
             script.append("    .invert()\n");
         }
 
-        // Confidence
         script.append("    .minConfidence(").append(String.format("%.2f", confidence)).append(")\n");
         script.append("    .run()\n\n");
 
-        // Apply metadata mappings
         script.append("// Apply detected text to metadata fields\n");
         for (Map.Entry<Integer, String> entry : fieldMappings.entrySet()) {
             int idx = entry.getKey();
@@ -949,9 +1136,8 @@ public class OCRDialog {
 
         script.append("\nprintln \"Applied \" + results.size() + \" OCR fields\"\n");
 
-        // Add to workflow
         try {
-            imageData.getHistoryWorkflow().addStep(
+            currentImageData.getHistoryWorkflow().addStep(
                     new DefaultScriptableWorkflowStep(
                             "OCR Label Recognition",
                             script.toString()

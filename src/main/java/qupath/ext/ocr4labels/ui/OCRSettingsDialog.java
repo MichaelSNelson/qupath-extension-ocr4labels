@@ -414,10 +414,24 @@ public class OCRSettingsDialog {
         enhanceContrastCb.selectedProperty().addListener((obs, old, newVal) ->
                 OCRPreferences.setEnhanceContrast(newVal));
 
+        // Separator before workflow settings
+        Separator sep = new Separator();
+
+        CheckBox autoRunCb = new CheckBox("Auto-run OCR when switching images");
+        autoRunCb.setSelected(OCRPreferences.isAutoRunOnEntrySwitch());
+        autoRunCb.setTooltip(new Tooltip(
+                "Automatically run OCR when you select a different image in the project list.\n\n" +
+                "When disabled, you must click the Run OCR button after selecting each image.\n" +
+                "Disable this for faster navigation through many images."));
+        autoRunCb.selectedProperty().addListener((obs, old, newVal) ->
+                OCRPreferences.setAutoRunOnEntrySwitch(newVal));
+
         content.getChildren().addAll(
                 detectOrientationCb,
                 autoRotateCb,
-                enhanceContrastCb
+                enhanceContrastCb,
+                sep,
+                autoRunCb
         );
         pane.setContent(content);
         return pane;

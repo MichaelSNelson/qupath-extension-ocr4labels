@@ -1,6 +1,5 @@
 package qupath.ext.ocr4labels.controller;
 
-import javafx.application.Platform;
 import javafx.stage.DirectoryChooser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,24 +48,25 @@ public class OCRController {
 
     /**
      * Runs OCR on the current image's label.
+     * Opens a dialog that allows navigation through all project images.
      *
      * @param qupath The QuPath GUI instance
      */
     public void runSingleImageOCR(QuPathGUI qupath) {
-        logger.info("Starting single image OCR workflow");
+        logger.info("Starting OCR workflow");
 
-        ImageData<?> imageData = qupath.getImageData();
-        if (imageData == null) {
-            Dialogs.showErrorMessage("OCR Error", "No image is currently open.");
+        // Ensure we have a project
+        var project = qupath.getProject();
+        if (project == null) {
+            Dialogs.showErrorMessage("OCR Error",
+                    "No project is currently open.\n" +
+                    "Please open a project to use the OCR dialog.");
             return;
         }
 
-        // Check for label image
-        if (!LabelImageUtility.isLabelImageAvailable(imageData)) {
+        if (project.getImageList().isEmpty()) {
             Dialogs.showErrorMessage("OCR Error",
-                    "No label image available for this slide.\n" +
-                            "Available associated images: " +
-                            LabelImageUtility.getAssociatedImageNames(imageData));
+                    "The project contains no images.");
             return;
         }
 
@@ -75,15 +75,8 @@ public class OCRController {
             return;
         }
 
-        // Get the label image
-        BufferedImage labelImage = LabelImageUtility.retrieveLabelImage(imageData);
-        if (labelImage == null) {
-            Dialogs.showErrorMessage("OCR Error", "Failed to retrieve label image.");
-            return;
-        }
-
-        // Show the OCR dialog
-        OCRDialog.show(qupath, labelImage, ocrEngine);
+        // Show the OCR dialog (it handles project navigation internally)
+        OCRDialog.show(qupath, ocrEngine);
     }
 
     /**
