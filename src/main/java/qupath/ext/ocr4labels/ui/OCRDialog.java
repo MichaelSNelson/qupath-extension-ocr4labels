@@ -580,7 +580,7 @@ public class OCRDialog {
         fieldsTable.setPlaceholder(new Label("Run OCR to detect text fields"));
         fieldsTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
 
-        // Text column
+        // Text column - flexible width, user can resize
         TableColumn<OCRFieldEntry, String> textCol = new TableColumn<>(resources.getString("column.text"));
         textCol.setCellValueFactory(data -> data.getValue().textProperty());
         textCol.setCellFactory(TextFieldTableCell.forTableColumn());
@@ -588,9 +588,10 @@ public class OCRDialog {
             e.getRowValue().setText(e.getNewValue());
             updateMetadataPreview();
         });
-        textCol.setMinWidth(100);
+        textCol.setMinWidth(80);
+        textCol.setPrefWidth(150);
 
-        // Metadata key column
+        // Metadata key column - flexible width, user can resize
         TableColumn<OCRFieldEntry, String> keyCol = new TableColumn<>(resources.getString("column.metadataKey"));
         keyCol.setCellValueFactory(data -> data.getValue().metadataKeyProperty());
         keyCol.setCellFactory(col -> new MetadataKeyCell());
@@ -605,15 +606,16 @@ public class OCRDialog {
             }
             updateMetadataPreview();
         });
-        keyCol.setMinWidth(120);
-        keyCol.setMaxWidth(150);
+        keyCol.setMinWidth(100);
+        keyCol.setPrefWidth(150);
 
-        // Confidence column
-        TableColumn<OCRFieldEntry, String> confCol = new TableColumn<>("Confidence");
+        // Confidence column - fixed width (always shows e.g. "93%")
+        TableColumn<OCRFieldEntry, String> confCol = new TableColumn<>("Conf");
         confCol.setCellValueFactory(data -> new SimpleStringProperty(
                 String.format("%.0f%%", data.getValue().getConfidence() * 100)));
-        confCol.setMinWidth(70);
-        confCol.setMaxWidth(80);
+        confCol.setMinWidth(50);
+        confCol.setMaxWidth(60);
+        confCol.setPrefWidth(55);
 
         fieldsTable.getColumns().addAll(textCol, keyCol, confCol);
         VBox.setVgrow(fieldsTable, Priority.ALWAYS);
