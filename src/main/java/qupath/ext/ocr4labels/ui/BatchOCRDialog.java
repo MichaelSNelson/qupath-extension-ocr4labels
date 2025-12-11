@@ -309,6 +309,20 @@ public class BatchOCRDialog {
     }
 
     private void createTemplateFromCurrentImage() {
+        // Open the single image OCR dialog for creating templates
+        // This allows users to edit metadata keys and save templates with proper positions
+        Dialogs.showInfoNotification("Create Template",
+                "The OCR dialog will open. Use it to:\n\n" +
+                "1. Run OCR and adjust detected fields\n" +
+                "2. Edit metadata key names as needed\n" +
+                "3. Click 'Save Template...' to save\n\n" +
+                "Then load the template here for batch processing.");
+
+        OCRDialog.show(qupath, ocrEngine);
+        return;
+
+        // Legacy code below - kept for reference but no longer executed
+        /*
         ImageData<?> imageData = qupath.getImageData();
         if (imageData == null) {
             Dialogs.showWarningNotification("No Image Open",
@@ -405,6 +419,7 @@ public class BatchOCRDialog {
                 });
             }
         }).start();
+        */
     }
 
     private void loadTemplate() {

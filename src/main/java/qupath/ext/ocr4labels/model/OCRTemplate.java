@@ -25,6 +25,8 @@ public class OCRTemplate {
     private List<FieldMapping> fieldMappings;
     private OCRConfiguration configuration;
     private long createdTimestamp;
+    private boolean useFixedPositions;
+    private double dilationFactor = 1.2; // Default 20% dilation
 
     /**
      * Creates a new empty template.
@@ -44,15 +46,23 @@ public class OCRTemplate {
 
     /**
      * Represents a mapping from a detected field to a metadata key.
+     * Optionally stores the bounding box for fixed-position OCR mode.
      */
     public static class FieldMapping {
         private int fieldIndex;
         private String metadataKey;
         private String exampleText;
         private boolean enabled;
+        // Bounding box for fixed-position mode (normalized 0-1 coordinates)
+        private double normalizedX;
+        private double normalizedY;
+        private double normalizedWidth;
+        private double normalizedHeight;
+        private boolean hasBoundingBox;
 
         public FieldMapping() {
             this.enabled = true;
+            this.hasBoundingBox = false;
         }
 
         public FieldMapping(int fieldIndex, String metadataKey, String exampleText) {
@@ -60,6 +70,21 @@ public class OCRTemplate {
             this.metadataKey = metadataKey;
             this.exampleText = exampleText;
             this.enabled = true;
+            this.hasBoundingBox = false;
+        }
+
+        public FieldMapping(int fieldIndex, String metadataKey, String exampleText,
+                           double normalizedX, double normalizedY,
+                           double normalizedWidth, double normalizedHeight) {
+            this.fieldIndex = fieldIndex;
+            this.metadataKey = metadataKey;
+            this.exampleText = exampleText;
+            this.enabled = true;
+            this.normalizedX = normalizedX;
+            this.normalizedY = normalizedY;
+            this.normalizedWidth = normalizedWidth;
+            this.normalizedHeight = normalizedHeight;
+            this.hasBoundingBox = true;
         }
 
         public int getFieldIndex() {
@@ -92,6 +117,66 @@ public class OCRTemplate {
 
         public void setEnabled(boolean enabled) {
             this.enabled = enabled;
+        }
+
+        public boolean hasBoundingBox() {
+            return hasBoundingBox;
+        }
+
+        public double getNormalizedX() {
+            return normalizedX;
+        }
+
+        public double getNormalizedY() {
+            return normalizedY;
+        }
+
+        public double getNormalizedWidth() {
+            return normalizedWidth;
+        }
+
+        public double getNormalizedHeight() {
+            return normalizedHeight;
+        }
+
+        public void setBoundingBox(double normalizedX, double normalizedY,
+                                   double normalizedWidth, double normalizedHeight) {
+            this.normalizedX = normalizedX;
+            this.normalizedY = normalizedY;
+            this.normalizedWidth = normalizedWidth;
+            this.normalizedHeight = normalizedHeight;
+            this.hasBoundingBox = true;
+        }
+
+        /**
+         * Gets the bounding box coordinates scaled to an image of the given dimensions,
+         * optionally dilated by the specified factor.
+         *
+         * @param imageWidth The image width in pixels
+         * @param imageHeight The image height in pixels
+         * @param dilationFactor Dilation factor (e.g., 1.2 for 20% larger)
+         * @return int array [x, y, width, height] in pixel coordinates
+         */
+        public int[] getScaledBoundingBox(int imageWidth, int imageHeight, double dilationFactor) {
+            if (!hasBoundingBox) return null;
+
+            double centerX = normalizedX + normalizedWidth / 2;
+            double centerY = normalizedY + normalizedHeight / 2;
+            double dilatedWidth = normalizedWidth * dilationFactor;
+            double dilatedHeight = normalizedHeight * dilationFactor;
+
+            double x = (centerX - dilatedWidth / 2) * imageWidth;
+            double y = (centerY - dilatedHeight / 2) * imageHeight;
+            double w = dilatedWidth * imageWidth;
+            double h = dilatedHeight * imageHeight;
+
+            // Clamp to image bounds
+            x = Math.max(0, x);
+            y = Math.max(0, y);
+            w = Math.min(w, imageWidth - x);
+            h = Math.min(h, imageHeight - y);
+
+            return new int[]{(int) x, (int) y, (int) w, (int) h};
         }
 
         @Override
@@ -144,6 +229,30 @@ public class OCRTemplate {
 
     public long getCreatedTimestamp() {
         return createdTimestamp;
+    }
+
+    public boolean isUseFixedPositions() {
+        return useFixedPositions;
+    }
+
+    public void setUseFixedPositions(boolean useFixedPositions) {
+        this.useFixedPositions = useFixedPositions;
+    }
+
+    public double getDilationFactor() {
+        return dilationFactor;
+    }
+
+    public void setDilationFactor(double dilationFactor) {
+        this.dilationFactor = dilationFactor;
+    }
+
+    /**
+     * Checks if this template has bounding box data for fixed-position mode.
+     */
+    public boolean hasBoundingBoxData() {
+        if (fieldMappings == null) return false;
+        return fieldMappings.stream().anyMatch(FieldMapping::hasBoundingBox);
     }
 
     /**

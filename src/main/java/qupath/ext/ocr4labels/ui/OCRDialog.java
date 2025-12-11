@@ -37,8 +37,13 @@ import qupath.lib.plugins.workflow.DefaultScriptableWorkflowStep;
 import qupath.lib.projects.Project;
 import qupath.lib.projects.ProjectImageEntry;
 
+import javafx.stage.FileChooser;
+import qupath.ext.ocr4labels.model.OCRTemplate;
+
 import java.awt.image.BufferedImage;
+import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.ResourceBundle;
@@ -91,6 +96,10 @@ public class OCRDialog {
     private boolean hasSelection = false;
     private ToggleButton selectRegionButton;
     private Button scanRegionButton;
+
+    // Template state
+    private OCRTemplate currentTemplate;
+    private CheckBox useFixedPositionsCheckBox;
 
     /**
      * Shows the OCR dialog for processing project entries.
@@ -184,8 +193,9 @@ public class OCRDialog {
     private ToolBar createToolbar() {
         runOCRButton = new Button(resources.getString("button.runOCR"));
         runOCRButton.setOnAction(e -> runOCR());
-        // Highlight the Run OCR button to draw attention
-        runOCRButton.setStyle("-fx-font-weight: bold; -fx-background-color: #e8f4e8;");
+        // Highlight the Run OCR button with high contrast styling
+        runOCRButton.setStyle("-fx-font-weight: bold; -fx-background-color: #4a90d9; -fx-text-fill: white; " +
+                "-fx-border-color: #2d5a87; -fx-border-width: 2px; -fx-border-radius: 3px; -fx-background-radius: 3px;");
 
         progressIndicator = new ProgressIndicator();
         progressIndicator.setMaxSize(24, 24);
@@ -400,10 +410,43 @@ public class OCRDialog {
             imageView.setVisible(true);
             overlayCanvas.setVisible(true);
             noLabelLabel.setVisible(false);
-            Platform.runLater(this::drawBoundingBoxes);
+            // Fit image to pane after a short delay to allow layout
+            Platform.runLater(() -> {
+                fitImageToPane();
+                drawBoundingBoxes();
+            });
         } else {
             showNoLabelPlaceholder();
         }
+    }
+
+    /**
+     * Fits the image to the scroll pane while maintaining aspect ratio.
+     * Ensures the entire image is visible without scrolling.
+     */
+    private void fitImageToPane() {
+        if (labelImage == null || imageScrollPane == null) return;
+
+        double paneWidth = imageScrollPane.getViewportBounds().getWidth();
+        double paneHeight = imageScrollPane.getViewportBounds().getHeight();
+
+        // If viewport not yet sized, use scroll pane dimensions with padding
+        if (paneWidth <= 0) paneWidth = imageScrollPane.getWidth() - 20;
+        if (paneHeight <= 0) paneHeight = imageScrollPane.getHeight() - 20;
+
+        if (paneWidth <= 0 || paneHeight <= 0) return;
+
+        double imgWidth = labelImage.getWidth();
+        double imgHeight = labelImage.getHeight();
+
+        // Calculate scale to fit both dimensions
+        double scaleX = paneWidth / imgWidth;
+        double scaleY = paneHeight / imgHeight;
+        double scale = Math.min(scaleX, scaleY);
+
+        // Apply scaled dimensions
+        imageView.setFitWidth(imgWidth * scale);
+        imageView.setFitHeight(imgHeight * scale);
     }
 
     /**
@@ -486,14 +529,15 @@ public class OCRDialog {
         imageScrollPane.setFitToHeight(true);
         VBox.setVgrow(imageScrollPane, Priority.ALWAYS);
 
-        // Make image fit the scroll pane
-        imageView.fitWidthProperty().bind(imageScrollPane.widthProperty().subtract(20));
-
         // Auto-refresh bounding boxes when scroll pane is resized
-        imageScrollPane.widthProperty().addListener((obs, old, newVal) ->
-                Platform.runLater(this::drawBoundingBoxes));
-        imageScrollPane.heightProperty().addListener((obs, old, newVal) ->
-                Platform.runLater(this::drawBoundingBoxes));
+        imageScrollPane.widthProperty().addListener((obs, old, newVal) -> {
+            fitImageToPane();
+            Platform.runLater(this::drawBoundingBoxes);
+        });
+        imageScrollPane.heightProperty().addListener((obs, old, newVal) -> {
+            fitImageToPane();
+            Platform.runLater(this::drawBoundingBoxes);
+        });
 
         // Zoom controls
         HBox zoomControls = new HBox(10);
@@ -501,15 +545,15 @@ public class OCRDialog {
 
         Button fitButton = new Button("Fit");
         fitButton.setOnAction(e -> {
-            imageView.fitWidthProperty().bind(imageScrollPane.widthProperty().subtract(20));
+            fitImageToPane();
             Platform.runLater(this::drawBoundingBoxes);
         });
 
         Button actualButton = new Button("100%");
         actualButton.setOnAction(e -> {
-            imageView.fitWidthProperty().unbind();
             if (labelImage != null) {
                 imageView.setFitWidth(labelImage.getWidth());
+                imageView.setFitHeight(labelImage.getHeight());
             }
             Platform.runLater(this::drawBoundingBoxes);
         });
@@ -577,7 +621,7 @@ public class OCRDialog {
             drawBoundingBoxes();
         });
 
-        // Button bar
+        // Button bar for field actions
         HBox buttonBar = new HBox(10);
         buttonBar.setAlignment(Pos.CENTER_LEFT);
 
@@ -593,6 +637,44 @@ public class OCRDialog {
 
         buttonBar.getChildren().addAll(addButton, clearButton);
 
+        // Template toolbar
+        HBox templateBar = new HBox(10);
+        templateBar.setAlignment(Pos.CENTER_LEFT);
+
+        Button saveTemplateBtn = new Button("Save Template...");
+        saveTemplateBtn.setTooltip(new Tooltip(
+                "Save current field positions and metadata keys to a template file.\n" +
+                "Templates can be reused to process similar labels automatically."));
+        saveTemplateBtn.setOnAction(e -> saveTemplate());
+
+        Button loadTemplateBtn = new Button("Load Template...");
+        loadTemplateBtn.setTooltip(new Tooltip(
+                "Load a saved template to apply its field positions and metadata keys.\n" +
+                "Use 'Apply Template' to extract text from the loaded positions."));
+        loadTemplateBtn.setOnAction(e -> loadTemplate());
+
+        Button applyTemplateBtn = new Button("Apply Template");
+        applyTemplateBtn.setTooltip(new Tooltip(
+                "Run OCR using the loaded template's fixed positions.\n" +
+                "Each field will be extracted from its saved location with 20% dilation."));
+        applyTemplateBtn.setOnAction(e -> applyTemplateToCurrentImage());
+        applyTemplateBtn.setDisable(true);
+
+        // Enable apply template button when template is loaded
+        useFixedPositionsCheckBox = new CheckBox("Use Fixed Positions");
+        useFixedPositionsCheckBox.setTooltip(new Tooltip(
+                "When enabled, uses saved bounding box positions from the template\n" +
+                "instead of running OCR detection. Each box is dilated 20% to\n" +
+                "account for slight variations in label positioning."));
+        useFixedPositionsCheckBox.setDisable(true);
+        useFixedPositionsCheckBox.selectedProperty().addListener((obs, old, newVal) -> {
+            applyTemplateBtn.setDisable(!newVal || currentTemplate == null);
+        });
+
+        templateBar.getChildren().addAll(saveTemplateBtn, loadTemplateBtn,
+                new Separator(javafx.geometry.Orientation.VERTICAL),
+                useFixedPositionsCheckBox, applyTemplateBtn);
+
         // Metadata preview
         Label previewLabel = new Label(resources.getString("label.metadataPreview"));
         previewLabel.setStyle("-fx-font-weight: bold;");
@@ -602,7 +684,7 @@ public class OCRDialog {
         metadataPreview.setPrefRowCount(3);
         metadataPreview.setStyle("-fx-font-family: monospace;");
 
-        panel.getChildren().addAll(titleLabel, fieldsTable, buttonBar, previewLabel, metadataPreview);
+        panel.getChildren().addAll(titleLabel, fieldsTable, buttonBar, templateBar, previewLabel, metadataPreview);
         return panel;
     }
 
@@ -994,6 +1076,246 @@ public class OCRDialog {
         fieldEntries.add(entry);
         fieldsTable.getSelectionModel().select(entry);
         updateMetadataPreview();
+    }
+
+    /**
+     * Saves current field entries as a template with bounding box positions.
+     */
+    private void saveTemplate() {
+        if (fieldEntries.isEmpty()) {
+            Dialogs.showWarningNotification("No Fields",
+                    "Run OCR first to detect fields before saving a template.");
+            return;
+        }
+
+        if (labelImage == null) {
+            Dialogs.showWarningNotification("No Label Image",
+                    "A label image is required to save bounding box positions.");
+            return;
+        }
+
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Save OCR Template");
+        chooser.getExtensionFilters().add(
+                new FileChooser.ExtensionFilter("OCR Template (*.json)", "*.json"));
+        chooser.setInitialFileName("ocr_template.json");
+
+        File file = chooser.showSaveDialog(stage);
+        if (file == null) return;
+
+        // Create template from current fields
+        String templateName = file.getName().replace(".json", "");
+        OCRTemplate template = new OCRTemplate(templateName);
+
+        // Build current OCR configuration
+        PSMOption selectedPSM = psmCombo.getValue();
+        OCRConfiguration config = OCRConfiguration.builder()
+                .pageSegMode(selectedPSM != null ? selectedPSM.getMode() : OCRConfiguration.PageSegMode.AUTO)
+                .language(OCRPreferences.getLanguage())
+                .minConfidence(confSlider.getValue() / 100.0)
+                .enhanceContrast(thresholdCheckBox.isSelected())
+                .build();
+        template.setConfiguration(config);
+
+        // Add field mappings with normalized bounding boxes
+        int imgWidth = labelImage.getWidth();
+        int imgHeight = labelImage.getHeight();
+
+        for (int i = 0; i < fieldEntries.size(); i++) {
+            OCRFieldEntry entry = fieldEntries.get(i);
+            String key = entry.getMetadataKey();
+            String text = entry.getText();
+            BoundingBox bbox = entry.getBoundingBox();
+
+            OCRTemplate.FieldMapping mapping;
+            if (bbox != null) {
+                // Normalize coordinates to 0-1 range
+                double normX = bbox.getX() / (double) imgWidth;
+                double normY = bbox.getY() / (double) imgHeight;
+                double normW = bbox.getWidth() / (double) imgWidth;
+                double normH = bbox.getHeight() / (double) imgHeight;
+
+                mapping = new OCRTemplate.FieldMapping(i, key, text, normX, normY, normW, normH);
+            } else {
+                mapping = new OCRTemplate.FieldMapping(i, key, text);
+            }
+            template.addFieldMapping(mapping);
+        }
+
+        template.setUseFixedPositions(true);
+        template.setDilationFactor(1.2); // 20% dilation
+
+        try {
+            template.saveToFile(file);
+            currentTemplate = template;
+            useFixedPositionsCheckBox.setDisable(false);
+            useFixedPositionsCheckBox.setSelected(true);
+
+            Dialogs.showInfoNotification("Template Saved",
+                    String.format("Saved template '%s' with %d field positions.",
+                            templateName, template.getFieldMappings().size()));
+        } catch (IOException e) {
+            logger.error("Error saving template", e);
+            Dialogs.showErrorMessage("Save Error", "Failed to save template: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Loads a template from file.
+     */
+    private void loadTemplate() {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Load OCR Template");
+        chooser.getExtensionFilters().add(
+                new FileChooser.ExtensionFilter("OCR Template (*.json)", "*.json"));
+
+        File file = chooser.showOpenDialog(stage);
+        if (file == null) return;
+
+        try {
+            currentTemplate = OCRTemplate.loadFromFile(file);
+
+            // Update UI to show template info
+            useFixedPositionsCheckBox.setDisable(!currentTemplate.hasBoundingBoxData());
+            useFixedPositionsCheckBox.setSelected(currentTemplate.hasBoundingBoxData());
+
+            // Show template fields as a preview
+            fieldEntries.clear();
+            String prefix = OCRPreferences.getMetadataPrefix();
+            for (OCRTemplate.FieldMapping mapping : currentTemplate.getFieldMappings()) {
+                OCRFieldEntry entry = new OCRFieldEntry(
+                        mapping.getExampleText() != null ? mapping.getExampleText() : "",
+                        mapping.getMetadataKey() != null ? mapping.getMetadataKey() : prefix + "field_" + mapping.getFieldIndex(),
+                        1.0f,
+                        null // Will be populated when applying template
+                );
+                fieldEntries.add(entry);
+            }
+            updateMetadataPreview();
+
+            Dialogs.showInfoNotification("Template Loaded",
+                    String.format("Loaded template '%s' with %d fields.%s",
+                            currentTemplate.getName(),
+                            currentTemplate.getFieldMappings().size(),
+                            currentTemplate.hasBoundingBoxData() ? "\nFixed positions available." : ""));
+        } catch (IOException e) {
+            logger.error("Error loading template", e);
+            Dialogs.showErrorMessage("Load Error", "Failed to load template: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Applies the loaded template to extract text from fixed positions.
+     */
+    private void applyTemplateToCurrentImage() {
+        if (currentTemplate == null) {
+            Dialogs.showWarningNotification("No Template",
+                    "Please load a template first.");
+            return;
+        }
+
+        if (labelImage == null) {
+            Dialogs.showWarningNotification("No Label Image",
+                    "Please select an image with a label first.");
+            return;
+        }
+
+        if (!currentTemplate.hasBoundingBoxData()) {
+            Dialogs.showWarningNotification("No Position Data",
+                    "The loaded template does not contain bounding box positions.\n" +
+                    "Use regular OCR instead, or load a different template.");
+            return;
+        }
+
+        progressIndicator.setVisible(true);
+        fieldEntries.clear();
+
+        int imgWidth = labelImage.getWidth();
+        int imgHeight = labelImage.getHeight();
+        double dilation = currentTemplate.getDilationFactor();
+
+        // Build OCR config - use very low confidence for fixed positions
+        OCRConfiguration config = OCRConfiguration.builder()
+                .pageSegMode(OCRConfiguration.PageSegMode.SINGLE_BLOCK)
+                .language(OCRPreferences.getLanguage())
+                .minConfidence(0.1) // Very low threshold for fixed positions
+                .enhanceContrast(thresholdCheckBox.isSelected())
+                .build();
+
+        // Process each field mapping
+        java.util.List<java.util.concurrent.CompletableFuture<Void>> futures = new ArrayList<>();
+
+        for (OCRTemplate.FieldMapping mapping : currentTemplate.getFieldMappings()) {
+            if (!mapping.isEnabled() || !mapping.hasBoundingBox()) continue;
+
+            int[] box = mapping.getScaledBoundingBox(imgWidth, imgHeight, dilation);
+            if (box == null || box[2] < 5 || box[3] < 5) continue;
+
+            // Extract region
+            BufferedImage regionImage;
+            try {
+                regionImage = labelImage.getSubimage(box[0], box[1], box[2], box[3]);
+            } catch (Exception e) {
+                logger.warn("Failed to extract region for field {}: {}", mapping.getFieldIndex(), e.getMessage());
+                continue;
+            }
+
+            // Apply inversion if needed
+            if (invertCheckBox.isSelected()) {
+                regionImage = invertImage(regionImage);
+            }
+
+            final BufferedImage finalRegion = regionImage;
+            final int fieldIndex = mapping.getFieldIndex();
+            final String metadataKey = mapping.getMetadataKey();
+            final int[] finalBox = box;
+
+            java.util.concurrent.CompletableFuture<Void> future = OCRController.getInstance()
+                    .performOCRAsync(finalRegion, config)
+                    .thenAccept(result -> {
+                        String extractedText = "";
+                        if (result.hasText()) {
+                            // Get all text from the region
+                            extractedText = result.getTextBlocks().stream()
+                                    .map(TextBlock::getText)
+                                    .filter(t -> t != null && !t.isEmpty())
+                                    .reduce((a, b) -> a + " " + b)
+                                    .orElse("");
+                        }
+
+                        final String text = extractedText.trim();
+                        Platform.runLater(() -> {
+                            BoundingBox bbox = new BoundingBox(finalBox[0], finalBox[1], finalBox[2], finalBox[3]);
+                            OCRFieldEntry entry = new OCRFieldEntry(text, metadataKey, 1.0f, bbox);
+                            fieldEntries.add(entry);
+                        });
+                    });
+
+            futures.add(future);
+        }
+
+        // Wait for all extractions to complete
+        java.util.concurrent.CompletableFuture.allOf(futures.toArray(new java.util.concurrent.CompletableFuture[0]))
+                .thenRun(() -> Platform.runLater(() -> {
+                    progressIndicator.setVisible(false);
+                    // Sort by field index
+                    fieldEntries.sort((a, b) -> {
+                        int idxA = Integer.parseInt(a.getMetadataKey().replaceAll("\\D+", ""));
+                        int idxB = Integer.parseInt(b.getMetadataKey().replaceAll("\\D+", ""));
+                        return Integer.compare(idxA, idxB);
+                    });
+                    updateMetadataPreview();
+                    drawBoundingBoxes();
+                    Dialogs.showInfoNotification("Template Applied",
+                            String.format("Extracted text from %d fixed positions.", fieldEntries.size()));
+                }))
+                .exceptionally(ex -> {
+                    Platform.runLater(() -> {
+                        progressIndicator.setVisible(false);
+                        Dialogs.showErrorMessage("Template Apply Failed", ex.getMessage());
+                    });
+                    return null;
+                });
     }
 
     private void applyMetadata() {
