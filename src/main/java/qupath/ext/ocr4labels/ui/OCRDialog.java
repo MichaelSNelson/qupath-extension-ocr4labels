@@ -1504,12 +1504,22 @@ public class OCRDialog {
 
             // Save the ImageData if it's not the currently open image
             if (imageData != currentImageData) {
-                selectedEntry.saveImageData(imageData);
+                // Use helper method to handle generic type safely
+                saveImageDataToEntry(selectedEntry, imageData);
                 logger.debug("Saved ImageData with workflow step");
             }
         } catch (Exception e) {
             logger.warn("Failed to add workflow step: {}", e.getMessage());
         }
+    }
+
+    /**
+     * Helper method to save ImageData to a project entry, handling generic type casting.
+     * This is safe because the ImageData was read from the same entry.
+     */
+    @SuppressWarnings("unchecked")
+    private <T> void saveImageDataToEntry(ProjectImageEntry<T> entry, ImageData<?> imageData) throws Exception {
+        entry.saveImageData((ImageData<T>) imageData);
     }
 
     /**
