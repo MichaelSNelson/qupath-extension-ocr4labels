@@ -103,6 +103,8 @@ public class OCRDialog {
 
     // Previous field entries for metadata key preservation across slides
     private List<OCRFieldEntry> previousFieldEntries = new ArrayList<>();
+    private int previousImageWidth = 0;
+    private int previousImageHeight = 0;
 
     /**
      * Shows the OCR dialog for processing project entries.
@@ -369,9 +371,13 @@ public class OCRDialog {
     private void onEntrySelected(ProjectImageEntry<?> entry) {
         selectedEntry = entry;
 
-        // Save current field entries for metadata key preservation
-        if (!fieldEntries.isEmpty()) {
+        // Save current field entries and image dimensions for metadata key preservation
+        if (!fieldEntries.isEmpty() && labelImage != null) {
             previousFieldEntries = new ArrayList<>(fieldEntries);
+            previousImageWidth = labelImage.getWidth();
+            previousImageHeight = labelImage.getHeight();
+            logger.debug("Saved {} field entries from previous image ({}x{})",
+                    previousFieldEntries.size(), previousImageWidth, previousImageHeight);
         }
 
         // Clear detected fields but preserve region selection
@@ -869,33 +875,33 @@ public class OCRDialog {
             return defaultKey;
         }
 
-        // Normalize bounding boxes to 0-1 range for comparison
-        double newX = newBox.getX();
-        double newY = newBox.getY();
-        double newW = newBox.getWidth();
-        double newH = newBox.getHeight();
+        // Need both current and previous image dimensions for proper normalization
+        if (labelImage == null || previousImageWidth <= 0 || previousImageHeight <= 0) {
+            return defaultKey;
+        }
 
-        // If we have image dimensions, normalize; otherwise compare absolute pixels
-        double imgWidth = labelImage != null ? labelImage.getWidth() : 1.0;
-        double imgHeight = labelImage != null ? labelImage.getHeight() : 1.0;
+        // Normalize NEW bounding box using CURRENT image dimensions
+        double currImgWidth = labelImage.getWidth();
+        double currImgHeight = labelImage.getHeight();
 
-        double newNormX = newX / imgWidth;
-        double newNormY = newY / imgHeight;
-        double newNormW = newW / imgWidth;
-        double newNormH = newH / imgHeight;
+        double newNormX = newBox.getX() / currImgWidth;
+        double newNormY = newBox.getY() / currImgHeight;
+        double newNormW = newBox.getWidth() / currImgWidth;
+        double newNormH = newBox.getHeight() / currImgHeight;
         double newArea = newNormW * newNormH;
 
         for (OCRFieldEntry prevEntry : previousFieldEntries) {
             BoundingBox prevBox = prevEntry.getBoundingBox();
             if (prevBox == null) continue;
 
-            double prevNormX = prevBox.getX() / imgWidth;
-            double prevNormY = prevBox.getY() / imgHeight;
-            double prevNormW = prevBox.getWidth() / imgWidth;
-            double prevNormH = prevBox.getHeight() / imgHeight;
+            // Normalize PREVIOUS bounding box using PREVIOUS image dimensions
+            double prevNormX = prevBox.getX() / previousImageWidth;
+            double prevNormY = prevBox.getY() / previousImageHeight;
+            double prevNormW = prevBox.getWidth() / previousImageWidth;
+            double prevNormH = prevBox.getHeight() / previousImageHeight;
             double prevArea = prevNormW * prevNormH;
 
-            // Calculate intersection
+            // Calculate intersection (both are now in 0-1 normalized space)
             double interX1 = Math.max(newNormX, prevNormX);
             double interY1 = Math.max(newNormY, prevNormY);
             double interX2 = Math.min(newNormX + newNormW, prevNormX + prevNormW);
