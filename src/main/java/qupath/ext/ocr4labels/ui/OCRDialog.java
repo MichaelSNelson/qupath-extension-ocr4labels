@@ -872,13 +872,19 @@ public class OCRDialog {
      */
     private String findMatchingMetadataKey(BoundingBox newBox, String defaultKey) {
         if (newBox == null || previousFieldEntries.isEmpty()) {
+            logger.info("findMatchingMetadataKey: no previous entries or null box, using default: {}", defaultKey);
             return defaultKey;
         }
 
         // Need both current and previous image dimensions for proper normalization
         if (labelImage == null || previousImageWidth <= 0 || previousImageHeight <= 0) {
+            logger.info("findMatchingMetadataKey: missing image dimensions (prev={}x{}), using default: {}",
+                    previousImageWidth, previousImageHeight, defaultKey);
             return defaultKey;
         }
+
+        logger.info("findMatchingMetadataKey: checking {} previous entries for overlap with new box at ({}, {}, {}, {})",
+                previousFieldEntries.size(), newBox.getX(), newBox.getY(), newBox.getWidth(), newBox.getHeight());
 
         // Normalize NEW bounding box using CURRENT image dimensions
         double currImgWidth = labelImage.getWidth();
@@ -913,17 +919,25 @@ public class OCRDialog {
 
             // Check if overlap is at least 50% of the smaller box
             double minArea = Math.min(newArea, prevArea);
+            double overlapPercent = minArea > 0 ? (interArea / minArea) * 100 : 0;
+            String prevKey = prevEntry.getMetadataKey();
+
+            logger.info("  Comparing with prev entry '{}' at norm({},{},{},{}) - overlap: {}%",
+                    prevKey,
+                    String.format("%.3f", prevNormX), String.format("%.3f", prevNormY),
+                    String.format("%.3f", prevNormW), String.format("%.3f", prevNormH),
+                    String.format("%.1f", overlapPercent));
+
             if (minArea > 0 && interArea / minArea >= 0.5) {
-                String prevKey = prevEntry.getMetadataKey();
                 // Only reuse non-default keys (user has customized them)
                 if (prevKey != null && !prevKey.isEmpty()) {
-                    logger.debug("Reusing metadata key '{}' based on {}% bounding box overlap",
-                            prevKey, String.format("%.0f", (interArea / minArea) * 100));
+                    logger.info("  -> MATCH! Reusing metadata key '{}'", prevKey);
                     return prevKey;
                 }
             }
         }
 
+        logger.info("  -> No match found, using default: {}", defaultKey);
         return defaultKey;
     }
 
