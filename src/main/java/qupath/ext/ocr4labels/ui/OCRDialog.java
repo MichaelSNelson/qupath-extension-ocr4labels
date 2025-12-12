@@ -377,8 +377,18 @@ public class OCRDialog {
             previousFieldEntries = new ArrayList<>(fieldEntries);
             previousImageWidth = labelImage.getWidth();
             previousImageHeight = labelImage.getHeight();
-            logger.debug("Saved {} field entries from previous image ({}x{})",
+            logger.info("Saved {} field entries from previous image ({}x{}) for key preservation",
                     previousFieldEntries.size(), previousImageWidth, previousImageHeight);
+            for (OCRFieldEntry e : previousFieldEntries) {
+                BoundingBox b = e.getBoundingBox();
+                if (b != null) {
+                    logger.info("  - '{}' at ({}, {}, {}, {})",
+                            e.getMetadataKey(), b.getX(), b.getY(), b.getWidth(), b.getHeight());
+                }
+            }
+        } else {
+            logger.info("No field entries to save (entries={}, labelImage={})",
+                    fieldEntries.size(), labelImage != null ? "present" : "null");
         }
 
         // Clear detected fields but preserve region selection
@@ -884,9 +894,6 @@ public class OCRDialog {
             return defaultKey;
         }
 
-        logger.info("findMatchingMetadataKey: checking {} previous entries for overlap with new box at ({}, {}, {}, {})",
-                previousFieldEntries.size(), newBox.getX(), newBox.getY(), newBox.getWidth(), newBox.getHeight());
-
         // Normalize NEW bounding box using CURRENT image dimensions
         double currImgWidth = labelImage.getWidth();
         double currImgHeight = labelImage.getHeight();
@@ -895,42 +902,32 @@ public class OCRDialog {
         double newNormY = newBox.getY() / currImgHeight;
         double newNormW = newBox.getWidth() / currImgWidth;
         double newNormH = newBox.getHeight() / currImgHeight;
-        double newArea = newNormW * newNormH;
+
+        logger.info("findMatchingMetadataKey: checking {} previous centroids against new box at norm({},{},{},{})",
+                previousFieldEntries.size(),
+                String.format("%.3f", newNormX), String.format("%.3f", newNormY),
+                String.format("%.3f", newNormW), String.format("%.3f", newNormH));
 
         for (OCRFieldEntry prevEntry : previousFieldEntries) {
             BoundingBox prevBox = prevEntry.getBoundingBox();
             if (prevBox == null) continue;
 
-            // Normalize PREVIOUS bounding box using PREVIOUS image dimensions
-            double prevNormX = prevBox.getX() / previousImageWidth;
-            double prevNormY = prevBox.getY() / previousImageHeight;
-            double prevNormW = prevBox.getWidth() / previousImageWidth;
-            double prevNormH = prevBox.getHeight() / previousImageHeight;
-            double prevArea = prevNormW * prevNormH;
+            // Calculate centroid of PREVIOUS bounding box (normalized using PREVIOUS image dimensions)
+            double prevCentroidX = (prevBox.getX() + prevBox.getWidth() / 2.0) / previousImageWidth;
+            double prevCentroidY = (prevBox.getY() + prevBox.getHeight() / 2.0) / previousImageHeight;
 
-            // Calculate intersection (both are now in 0-1 normalized space)
-            double interX1 = Math.max(newNormX, prevNormX);
-            double interY1 = Math.max(newNormY, prevNormY);
-            double interX2 = Math.min(newNormX + newNormW, prevNormX + prevNormW);
-            double interY2 = Math.min(newNormY + newNormH, prevNormY + prevNormH);
-
-            double interW = Math.max(0, interX2 - interX1);
-            double interH = Math.max(0, interY2 - interY1);
-            double interArea = interW * interH;
-
-            // Check if overlap is at least 50% of the smaller box
-            double minArea = Math.min(newArea, prevArea);
-            double overlapPercent = minArea > 0 ? (interArea / minArea) * 100 : 0;
             String prevKey = prevEntry.getMetadataKey();
 
-            logger.info("  Comparing with prev entry '{}' at norm({},{},{},{}) - overlap: {}%",
-                    prevKey,
-                    String.format("%.3f", prevNormX), String.format("%.3f", prevNormY),
-                    String.format("%.3f", prevNormW), String.format("%.3f", prevNormH),
-                    String.format("%.1f", overlapPercent));
+            // Check if previous centroid falls within new bounding box
+            boolean centroidInBox = prevCentroidX >= newNormX && prevCentroidX <= (newNormX + newNormW) &&
+                                    prevCentroidY >= newNormY && prevCentroidY <= (newNormY + newNormH);
 
-            if (minArea > 0 && interArea / minArea >= 0.5) {
-                // Only reuse non-default keys (user has customized them)
+            logger.info("  Prev '{}' centroid ({},{}) in new box? {}",
+                    prevKey,
+                    String.format("%.3f", prevCentroidX), String.format("%.3f", prevCentroidY),
+                    centroidInBox ? "YES" : "no");
+
+            if (centroidInBox) {
                 if (prevKey != null && !prevKey.isEmpty()) {
                     logger.info("  -> MATCH! Reusing metadata key '{}'", prevKey);
                     return prevKey;
@@ -938,7 +935,7 @@ public class OCRDialog {
             }
         }
 
-        logger.info("  -> No match found, using default: {}", defaultKey);
+        logger.info("  -> No centroid match found, using default: {}", defaultKey);
         return defaultKey;
     }
 
