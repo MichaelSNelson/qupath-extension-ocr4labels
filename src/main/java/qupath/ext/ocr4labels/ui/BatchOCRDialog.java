@@ -428,6 +428,18 @@ public class BatchOCRDialog {
         chooser.getExtensionFilters().add(
                 new FileChooser.ExtensionFilter("OCR Template (*.json)", "*.json"));
 
+        // Set initial directory to project folder if available
+        if (project != null) {
+            try {
+                File projectDir = project.getPath().toFile().getParentFile();
+                if (projectDir != null && projectDir.isDirectory()) {
+                    chooser.setInitialDirectory(projectDir);
+                }
+            } catch (Exception e) {
+                logger.debug("Could not get project directory: {}", e.getMessage());
+            }
+        }
+
         File file = chooser.showOpenDialog(stage);
         if (file == null) return;
 
@@ -459,6 +471,18 @@ public class BatchOCRDialog {
         chooser.getExtensionFilters().add(
                 new FileChooser.ExtensionFilter("OCR Template (*.json)", "*.json"));
         chooser.setInitialFileName("ocr_template.json");
+
+        // Set initial directory to project folder if available
+        if (project != null) {
+            try {
+                File projectDir = project.getPath().toFile().getParentFile();
+                if (projectDir != null && projectDir.isDirectory()) {
+                    chooser.setInitialDirectory(projectDir);
+                }
+            } catch (Exception e) {
+                logger.debug("Could not get project directory: {}", e.getMessage());
+            }
+        }
 
         File file = chooser.showSaveDialog(stage);
         if (file == null) return;
