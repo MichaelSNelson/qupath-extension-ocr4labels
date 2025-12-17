@@ -24,6 +24,7 @@ import qupath.ext.ocr4labels.preferences.OCRPreferences;
 import qupath.ext.ocr4labels.service.OCREngine;
 import qupath.ext.ocr4labels.utilities.LabelImageUtility;
 import qupath.ext.ocr4labels.utilities.OCRMetadataManager;
+import qupath.ext.ocr4labels.utilities.TextMatcher;
 import qupath.fx.dialogs.Dialogs;
 import qupath.lib.gui.QuPathGUI;
 import qupath.lib.images.ImageData;
@@ -62,6 +63,11 @@ public class BatchOCRDialog {
     private Button processButton;
     private Button applyButton;
     private AtomicBoolean processingCancelled;
+
+    // Vocabulary matching for OCR correction
+    private TextMatcher textMatcher;
+    private Label vocabularyStatusLabel;
+    private CheckBox ocrWeightsCheckBox;
 
     /**
      * Shows the batch OCR dialog.
@@ -240,29 +246,34 @@ public class BatchOCRDialog {
         Label resultsLabel = new Label("Processing Results:");
         resultsLabel.setStyle("-fx-font-weight: bold;");
 
-        // Results table
+        // Results table with editable cells
         resultsTable = new TableView<>(imageEntries);
         resultsTable.setPlaceholder(new Label("Click 'Process All' to run OCR on all images."));
+        resultsTable.setEditable(true);
 
+        // Fixed columns (non-editable)
         TableColumn<ImageProcessingEntry, String> nameCol = new TableColumn<>("Image Name");
         nameCol.setCellValueFactory(data ->
                 new SimpleStringProperty(data.getValue().getImageName()));
-        nameCol.setPrefWidth(250);
+        nameCol.setPrefWidth(200);
+        nameCol.setMinWidth(150);
 
         TableColumn<ImageProcessingEntry, String> statusCol = new TableColumn<>("Status");
         statusCol.setCellValueFactory(data -> data.getValue().statusProperty());
-        statusCol.setPrefWidth(100);
+        statusCol.setPrefWidth(80);
+        statusCol.setMinWidth(60);
 
-        TableColumn<ImageProcessingEntry, String> fieldsCol = new TableColumn<>("Fields Found");
-        fieldsCol.setCellValueFactory(data -> data.getValue().fieldsFoundProperty());
-        fieldsCol.setPrefWidth(100);
+        resultsTable.getColumns().addAll(nameCol, statusCol);
 
-        TableColumn<ImageProcessingEntry, String> previewCol = new TableColumn<>("Metadata Preview");
-        previewCol.setCellValueFactory(data -> data.getValue().metadataPreviewProperty());
-        previewCol.setPrefWidth(350);
+        // Wrap in ScrollPane for horizontal scrolling
+        ScrollPane scrollPane = new ScrollPane(resultsTable);
+        scrollPane.setFitToHeight(true);
+        scrollPane.setHbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+        scrollPane.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+        VBox.setVgrow(scrollPane, Priority.ALWAYS);
 
-        resultsTable.getColumns().addAll(nameCol, statusCol, fieldsCol, previewCol);
-        VBox.setVgrow(resultsTable, Priority.ALWAYS);
+        // Filter bar for text manipulation
+        HBox filterBar = createFilterBar();
 
         // Progress section
         HBox progressBox = new HBox(10);
@@ -276,8 +287,331 @@ public class BatchOCRDialog {
 
         progressBox.getChildren().addAll(progressBar, statusLabel);
 
-        section.getChildren().addAll(resultsLabel, resultsTable, progressBox);
+        section.getChildren().addAll(resultsLabel, scrollPane, filterBar, progressBox);
         return section;
+    }
+
+    /**
+     * Updates the results table columns based on the current template's field mappings.
+     * Called after loading a template or after processing to add dynamic field columns.
+     */
+    private void updateResultsTableColumns() {
+        if (currentTemplate == null) return;
+
+        // Remove all columns except the first two (Image Name, Status)
+        while (resultsTable.getColumns().size() > 2) {
+            resultsTable.getColumns().remove(resultsTable.getColumns().size() - 1);
+        }
+
+        // Add a column for each enabled field mapping
+        for (OCRTemplate.FieldMapping mapping : currentTemplate.getFieldMappings()) {
+            if (!mapping.isEnabled()) continue;
+
+            String key = mapping.getMetadataKey();
+            TableColumn<ImageProcessingEntry, String> fieldCol = new TableColumn<>(key);
+            fieldCol.setCellValueFactory(data -> data.getValue().getFieldProperty(key));
+            fieldCol.setCellFactory(javafx.scene.control.cell.TextFieldTableCell.forTableColumn());
+            fieldCol.setOnEditCommit(e -> {
+                e.getRowValue().setFieldValue(key, e.getNewValue());
+            });
+            fieldCol.setPrefWidth(120);
+            fieldCol.setMinWidth(80);
+            fieldCol.setEditable(true);
+
+            resultsTable.getColumns().add(fieldCol);
+        }
+
+        // Adjust table width to fit all columns
+        double totalWidth = resultsTable.getColumns().stream()
+                .mapToDouble(TableColumn::getPrefWidth)
+                .sum();
+        resultsTable.setPrefWidth(Math.max(totalWidth + 20, 600));
+    }
+
+    /**
+     * Creates the filter bar with buttons for text filtering operations.
+     */
+    private HBox createFilterBar() {
+        HBox filterBar = new HBox(5);
+        filterBar.setAlignment(Pos.CENTER_LEFT);
+        filterBar.setPadding(new Insets(5, 0, 5, 0));
+
+        Label filterLabel = new Label("Filter all fields:");
+        filterLabel.setStyle("-fx-font-size: 11px;");
+
+        // Create filter buttons
+        for (qupath.ext.ocr4labels.utilities.TextFilters.TextFilter filter :
+                qupath.ext.ocr4labels.utilities.TextFilters.ALL_FILTERS) {
+            Button btn = new Button(filter.getButtonLabel());
+            btn.setStyle("-fx-font-size: 10px; -fx-padding: 2 6 2 6;");
+            btn.setTooltip(new Tooltip(filter.getTooltip()));
+            btn.setOnAction(e -> applyTextFilter(filter));
+            filterBar.getChildren().add(btn);
+        }
+
+        // Add the label at the beginning
+        filterBar.getChildren().add(0, filterLabel);
+
+        // Add separator and vocabulary matching section
+        filterBar.getChildren().add(new Separator(javafx.geometry.Orientation.VERTICAL));
+
+        // Vocabulary matching controls
+        Button loadVocabBtn = new Button("Load List...");
+        loadVocabBtn.setStyle("-fx-font-size: 10px; -fx-padding: 2 6 2 6;");
+        loadVocabBtn.setOnAction(e -> loadVocabularyFile());
+
+        // Help button with tooltip explaining vocabulary matching
+        Label helpLabel = new Label("?");
+        helpLabel.setStyle("-fx-font-size: 11px; -fx-font-weight: bold; -fx-text-fill: #0066cc; " +
+                "-fx-cursor: hand; -fx-padding: 0 3 0 3;");
+        helpLabel.setTooltip(new Tooltip(
+                "Vocabulary Matching - Correct OCR errors automatically\n\n" +
+                "Load a text file (CSV, TSV, or plain text) containing known valid values.\n" +
+                "After filtering, click 'Match All' to correct OCR mistakes by finding the\n" +
+                "closest match from your list across ALL processed images.\n\n" +
+                "Example: If your list contains 'Sample_001' and OCR detected 'Samp1e_0O1',\n" +
+                "the matcher will correct it to 'Sample_001'.\n\n" +
+                "File format:\n" +
+                "  - CSV: Uses first column (header row auto-skipped)\n" +
+                "  - TSV/TXT: Uses first column or whole line\n" +
+                "  - One valid value per line\n\n" +
+                "Uses Levenshtein distance with OCR-aware weighting\n" +
+                "(0/O, 1/l/I confusions have lower penalty)."));
+
+        Button matchBtn = new Button("Match All");
+        matchBtn.setStyle("-fx-font-size: 10px; -fx-padding: 2 6 2 6;");
+        matchBtn.setDisable(true); // Enabled when vocabulary is loaded
+        matchBtn.setTooltip(new Tooltip("Match all detected text against loaded vocabulary to correct OCR errors"));
+        matchBtn.setOnAction(e -> applyVocabularyMatching());
+
+        // OCR weights toggle
+        ocrWeightsCheckBox = new CheckBox("OCR weights");
+        ocrWeightsCheckBox.setStyle("-fx-font-size: 10px;");
+        ocrWeightsCheckBox.setSelected(false); // Default off for scientific names
+        ocrWeightsCheckBox.setTooltip(new Tooltip(
+                "OCR-Weighted Matching\n\n" +
+                "When ENABLED: Common OCR confusions have lower penalty:\n" +
+                "  - 0/O, 1/l/I, 5/S, 8/B are treated as similar\n" +
+                "  - Better for natural text with accidental letter/number swaps\n\n" +
+                "When DISABLED (default): All character changes have equal cost\n" +
+                "  - Better for scientific sample names like 'PBS_O1' vs 'PBS_01'\n" +
+                "  - Treats intentional letter/number choices as significant"));
+
+        // Status label showing loaded vocabulary info
+        vocabularyStatusLabel = new Label("");
+        vocabularyStatusLabel.setStyle("-fx-font-size: 10px; -fx-text-fill: #666666;");
+
+        // Store match button reference for enabling/disabling
+        loadVocabBtn.setUserData(matchBtn);
+
+        filterBar.getChildren().addAll(loadVocabBtn, helpLabel, ocrWeightsCheckBox, matchBtn, vocabularyStatusLabel);
+
+        return filterBar;
+    }
+
+    /**
+     * Applies a text filter to all field values across all processed entries.
+     */
+    private void applyTextFilter(qupath.ext.ocr4labels.utilities.TextFilters.TextFilter filter) {
+        // Count entries that have been processed
+        long processedCount = imageEntries.stream()
+                .filter(e -> "Done".equals(e.getStatus()) || "Applied".equals(e.getStatus()))
+                .count();
+
+        if (processedCount == 0) {
+            Dialogs.showWarningNotification("No Data", "Process images first to filter their field values.");
+            return;
+        }
+
+        int modifiedEntries = 0;
+        int modifiedFields = 0;
+
+        for (ImageProcessingEntry entry : imageEntries) {
+            if (!"Done".equals(entry.getStatus()) && !"Applied".equals(entry.getStatus())) {
+                continue;
+            }
+
+            boolean entryModified = false;
+            Map<String, String> metadata = entry.getMetadata();
+            if (metadata == null) continue;
+
+            for (Map.Entry<String, String> field : metadata.entrySet()) {
+                String original = field.getValue();
+                String filtered = filter.apply(original);
+                if (original != null && !original.equals(filtered)) {
+                    entry.setFieldValue(field.getKey(), filtered);
+                    modifiedFields++;
+                    entryModified = true;
+                }
+            }
+
+            if (entryModified) {
+                modifiedEntries++;
+            }
+        }
+
+        if (modifiedFields > 0) {
+            resultsTable.refresh();
+            logger.info("Applied filter '{}' to {} fields across {} entries",
+                    filter.getName(), modifiedFields, modifiedEntries);
+            Dialogs.showInfoNotification("Filter Applied",
+                    String.format("Modified %d fields across %d images.", modifiedFields, modifiedEntries));
+        } else {
+            Dialogs.showInfoNotification("No Changes",
+                    "Filter '" + filter.getName() + "' did not modify any text.");
+        }
+    }
+
+    /**
+     * Opens a file chooser to load a vocabulary file for OCR correction matching.
+     */
+    private void loadVocabularyFile() {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Load Vocabulary File");
+        chooser.getExtensionFilters().addAll(
+                new FileChooser.ExtensionFilter("All Supported", "*.csv", "*.tsv", "*.txt"),
+                new FileChooser.ExtensionFilter("CSV Files", "*.csv"),
+                new FileChooser.ExtensionFilter("TSV Files", "*.tsv"),
+                new FileChooser.ExtensionFilter("Text Files", "*.txt")
+        );
+
+        // Set initial directory to project folder if available
+        if (project != null) {
+            try {
+                File projectDir = project.getPath().toFile().getParentFile();
+                if (projectDir != null && projectDir.isDirectory()) {
+                    chooser.setInitialDirectory(projectDir);
+                }
+            } catch (Exception e) {
+                logger.debug("Could not get project directory: {}", e.getMessage());
+            }
+        }
+
+        File file = chooser.showOpenDialog(stage);
+        if (file == null) return;
+
+        try {
+            if (textMatcher == null) {
+                textMatcher = new TextMatcher();
+            }
+            textMatcher.loadVocabularyFromFile(file);
+
+            // Update UI to show vocabulary is loaded
+            int count = textMatcher.getVocabularySize();
+            vocabularyStatusLabel.setText(String.format("(%d entries)", count));
+
+            // Enable the Match All button - find it in the filter bar
+            for (javafx.scene.Node node : ((HBox) vocabularyStatusLabel.getParent()).getChildren()) {
+                if (node instanceof Button && "Match All".equals(((Button) node).getText())) {
+                    node.setDisable(false);
+                    break;
+                }
+            }
+
+            Dialogs.showInfoNotification("Vocabulary Loaded",
+                    String.format("Loaded %d entries from %s", count, file.getName()));
+
+        } catch (IOException e) {
+            logger.error("Failed to load vocabulary file", e);
+            Dialogs.showErrorMessage("Load Error",
+                    "Failed to load vocabulary file:\n" + e.getMessage());
+        }
+    }
+
+    /**
+     * Applies vocabulary matching to correct OCR errors across all processed images.
+     * Uses fuzzy matching (Levenshtein distance) to find the closest match
+     * from the loaded vocabulary for each detected text value.
+     */
+    private void applyVocabularyMatching() {
+        if (textMatcher == null || !textMatcher.hasVocabulary()) {
+            Dialogs.showWarningNotification("No Vocabulary",
+                    "Please load a vocabulary file first using 'Load List...'");
+            return;
+        }
+
+        // Count entries that have been processed
+        long processedCount = imageEntries.stream()
+                .filter(e -> "Done".equals(e.getStatus()) || "Applied".equals(e.getStatus()))
+                .count();
+
+        if (processedCount == 0) {
+            Dialogs.showWarningNotification("No Data",
+                    "Process images first before applying vocabulary matching.");
+            return;
+        }
+
+        // Apply OCR weights setting from checkbox
+        textMatcher.setUseOCRWeights(ocrWeightsCheckBox.isSelected());
+
+        int totalCorrected = 0;
+        int totalExact = 0;
+        int totalNoMatch = 0;
+        int entriesModified = 0;
+
+        for (ImageProcessingEntry entry : imageEntries) {
+            if (!"Done".equals(entry.getStatus()) && !"Applied".equals(entry.getStatus())) {
+                continue;
+            }
+
+            Map<String, String> metadata = entry.getMetadata();
+            if (metadata == null) continue;
+
+            boolean entryModified = false;
+
+            for (Map.Entry<String, String> field : metadata.entrySet()) {
+                String original = field.getValue();
+                if (original == null || original.isEmpty()) {
+                    totalNoMatch++;
+                    continue;
+                }
+
+                TextMatcher.MatchResult match = textMatcher.findBestMatch(original);
+
+                if (match == null) {
+                    totalNoMatch++;
+                } else if (match.isExactMatch()) {
+                    totalExact++;
+                } else {
+                    // Found a fuzzy match - apply correction
+                    entry.setFieldValue(field.getKey(), match.getMatchedValue());
+                    totalCorrected++;
+                    entryModified = true;
+                    logger.debug("Corrected '{}' -> '{}' in {}",
+                            original, match.getMatchedValue(), entry.getImageName());
+                }
+            }
+
+            if (entryModified) {
+                entriesModified++;
+            }
+        }
+
+        if (totalCorrected > 0) {
+            resultsTable.refresh();
+        }
+
+        // Log what mode was used
+        String modeInfo = ocrWeightsCheckBox.isSelected() ? "OCR-weighted" : "standard";
+        logger.info("Batch vocabulary matching ({}): corrected={}, exact={}, noMatch={}, entriesModified={}",
+                modeInfo, totalCorrected, totalExact, totalNoMatch, entriesModified);
+
+        // Show summary
+        if (totalCorrected > 0) {
+            Dialogs.showInfoNotification("Matching Complete",
+                    String.format("Corrected %d field(s) across %d image(s) using %s matching.",
+                            totalCorrected, entriesModified, modeInfo));
+        } else if (totalExact > 0) {
+            Dialogs.showInfoNotification("No Corrections Needed",
+                    "All detected values already match the vocabulary.");
+        } else {
+            Dialogs.showWarningNotification("No Matches",
+                    "None of the detected values matched the vocabulary.\n\n" +
+                    "Try:\n" +
+                    "  - Toggling 'OCR weights' checkbox\n" +
+                    "  - Checking your vocabulary file contents\n" +
+                    "  - Applying text filters first");
+        }
     }
 
     private HBox createButtonBar() {
@@ -449,6 +783,9 @@ public class BatchOCRDialog {
                     currentTemplate.getFieldMappings()));
             processButton.setDisable(false);
 
+            // Update results table columns to match template fields
+            updateResultsTableColumns();
+
             Dialogs.showInfoNotification("Template Loaded",
                     String.format("Loaded template '%s' with %d field mappings.",
                             currentTemplate.getName(), currentTemplate.getFieldMappings().size()));
@@ -616,34 +953,28 @@ public class BatchOCRDialog {
             entry.setFieldsFound(String.valueOf(detectedTexts.size()));
             entry.setDetectedTexts(detectedTexts);
 
-            // Build metadata map based on template
-            Map<String, String> metadata = new LinkedHashMap<>();
+            // Build metadata and populate editable field properties
+            int fieldsPopulated = 0;
             for (OCRTemplate.FieldMapping mapping : currentTemplate.getFieldMappings()) {
                 if (!mapping.isEnabled()) continue;
 
                 int idx = mapping.getFieldIndex();
+                String key = mapping.getMetadataKey();
                 if (idx < detectedTexts.size()) {
-                    metadata.put(mapping.getMetadataKey(), detectedTexts.get(idx));
+                    String value = detectedTexts.get(idx);
+                    entry.setFieldValue(key, value);
+                    fieldsPopulated++;
+                } else {
+                    // Field not found - set empty
+                    entry.setFieldValue(key, "");
                 }
             }
 
-            entry.setMetadata(metadata);
-
-            // Build preview string
-            if (metadata.isEmpty()) {
+            // Update preview (for backward compatibility)
+            if (fieldsPopulated == 0) {
                 entry.setMetadataPreview("(no matching fields)");
             } else {
-                StringBuilder preview = new StringBuilder();
-                int count = 0;
-                for (Map.Entry<String, String> e : metadata.entrySet()) {
-                    if (count > 0) preview.append(", ");
-                    preview.append(e.getKey()).append("=").append(e.getValue());
-                    if (++count >= 3 && metadata.size() > 3) {
-                        preview.append("... (+").append(metadata.size() - 3).append(" more)");
-                        break;
-                    }
-                }
-                entry.setMetadataPreview(preview.toString());
+                entry.setMetadataPreview(fieldsPopulated + " fields");
             }
 
             entry.setStatus("Done");
@@ -657,18 +988,20 @@ public class BatchOCRDialog {
     }
 
     private void applyAllMetadata() {
+        // Count entries that have been processed successfully
         long successCount = imageEntries.stream()
-                .filter(e -> "Done".equals(e.getStatus()) && e.getMetadata() != null && !e.getMetadata().isEmpty())
+                .filter(e -> "Done".equals(e.getStatus()))
                 .count();
 
         if (successCount == 0) {
             Dialogs.showWarningNotification("No Metadata",
-                    "No images have metadata to apply.");
+                    "No images have been processed successfully.");
             return;
         }
 
         boolean confirm = Dialogs.showConfirmDialog("Apply Metadata",
                 String.format("This will apply OCR metadata to %d images.\n\n" +
+                        "Any edits you made to the field values will be saved.\n\n" +
                         "Do you want to continue?", successCount));
 
         if (!confirm) return;
@@ -678,11 +1011,14 @@ public class BatchOCRDialog {
 
         for (ImageProcessingEntry entry : imageEntries) {
             if (!"Done".equals(entry.getStatus())) continue;
-            if (entry.getMetadata() == null || entry.getMetadata().isEmpty()) continue;
+
+            // Get metadata from the entry (includes any user edits)
+            Map<String, String> metadata = entry.getMetadata();
+            if (metadata == null || metadata.isEmpty()) continue;
 
             try {
                 int count = OCRMetadataManager.setMetadataBatch(
-                        entry.getProjectEntry(), entry.getMetadata(), project);
+                        entry.getProjectEntry(), metadata, project);
                 if (count > 0) {
                     applied++;
                     entry.setStatus("Applied");
@@ -720,6 +1056,8 @@ public class BatchOCRDialog {
         private final SimpleStringProperty metadataPreview;
         private List<String> detectedTexts;
         private Map<String, String> metadata;
+        // Observable properties for each field - keys are metadata keys, values are editable
+        private final Map<String, SimpleStringProperty> fieldProperties = new LinkedHashMap<>();
 
         public ImageProcessingEntry(ProjectImageEntry<?> projectEntry) {
             this.projectEntry = projectEntry;
@@ -734,6 +1072,34 @@ public class BatchOCRDialog {
             metadataPreview.set("-");
             detectedTexts = null;
             metadata = null;
+            fieldProperties.clear();
+        }
+
+        /**
+         * Gets or creates an observable property for a metadata field.
+         */
+        public SimpleStringProperty getFieldProperty(String key) {
+            return fieldProperties.computeIfAbsent(key, k -> new SimpleStringProperty(""));
+        }
+
+        /**
+         * Sets the value for a metadata field (creates property if needed).
+         */
+        public void setFieldValue(String key, String value) {
+            getFieldProperty(key).set(value != null ? value : "");
+            // Also update the metadata map
+            if (metadata == null) {
+                metadata = new LinkedHashMap<>();
+            }
+            metadata.put(key, value);
+        }
+
+        /**
+         * Gets the current value for a metadata field.
+         */
+        public String getFieldValue(String key) {
+            SimpleStringProperty prop = fieldProperties.get(key);
+            return prop != null ? prop.get() : "";
         }
 
         public ProjectImageEntry<?> getProjectEntry() {

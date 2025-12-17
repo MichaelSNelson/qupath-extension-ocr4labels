@@ -40,6 +40,8 @@ import qupath.lib.projects.ProjectImageEntry;
 import javafx.stage.FileChooser;
 import qupath.ext.ocr4labels.model.OCRTemplate;
 
+import qupath.ext.ocr4labels.utilities.TextMatcher;
+
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
@@ -106,6 +108,11 @@ public class OCRDialog {
     private List<OCRFieldEntry> previousFieldEntries = new ArrayList<>();
     private int previousImageWidth = 0;
     private int previousImageHeight = 0;
+
+    // Vocabulary matching for OCR correction
+    private TextMatcher textMatcher;
+    private Label vocabularyStatusLabel;
+    private CheckBox ocrWeightsCheckBox;
 
     /**
      * Shows the OCR dialog for processing project entries.
@@ -681,6 +688,9 @@ public class OCRDialog {
 
         buttonBar.getChildren().addAll(addButton, removeButton, clearButton);
 
+        // Text filter toolbar
+        HBox filterBar = createFilterBar();
+
         // Template toolbar
         HBox templateBar = new HBox(10);
         templateBar.setAlignment(Pos.CENTER_LEFT);
@@ -728,8 +738,250 @@ public class OCRDialog {
         metadataPreview.setPrefRowCount(3);
         metadataPreview.setStyle("-fx-font-family: monospace;");
 
-        panel.getChildren().addAll(titleLabel, fieldsTable, buttonBar, templateBar, previewLabel, metadataPreview);
+        panel.getChildren().addAll(titleLabel, fieldsTable, buttonBar, filterBar, templateBar, previewLabel, metadataPreview);
         return panel;
+    }
+
+    /**
+     * Creates the filter bar with buttons for text filtering operations.
+     */
+    private HBox createFilterBar() {
+        HBox filterBar = new HBox(5);
+        filterBar.setAlignment(Pos.CENTER_LEFT);
+        filterBar.setPadding(new Insets(2, 0, 2, 0));
+
+        Label filterLabel = new Label("Filter text:");
+        filterLabel.setStyle("-fx-font-size: 11px;");
+
+        // Create filter buttons
+        for (qupath.ext.ocr4labels.utilities.TextFilters.TextFilter filter :
+                qupath.ext.ocr4labels.utilities.TextFilters.ALL_FILTERS) {
+            Button btn = new Button(filter.getButtonLabel());
+            btn.setStyle("-fx-font-size: 10px; -fx-padding: 2 6 2 6;");
+            btn.setTooltip(new Tooltip(filter.getTooltip()));
+            btn.setOnAction(e -> applyTextFilter(filter));
+            filterBar.getChildren().add(btn);
+        }
+
+        // Add the label at the beginning
+        filterBar.getChildren().add(0, filterLabel);
+
+        // Add separator and vocabulary matching section
+        filterBar.getChildren().add(new Separator(javafx.geometry.Orientation.VERTICAL));
+
+        // Vocabulary matching controls
+        Button loadVocabBtn = new Button("Load List...");
+        loadVocabBtn.setStyle("-fx-font-size: 10px; -fx-padding: 2 6 2 6;");
+        loadVocabBtn.setOnAction(e -> loadVocabularyFile());
+
+        // Help button with tooltip explaining vocabulary matching
+        Label helpLabel = new Label("?");
+        helpLabel.setStyle("-fx-font-size: 11px; -fx-font-weight: bold; -fx-text-fill: #0066cc; " +
+                "-fx-cursor: hand; -fx-padding: 0 3 0 3;");
+        helpLabel.setTooltip(new Tooltip(
+                "Vocabulary Matching - Correct OCR errors automatically\n\n" +
+                "Load a text file (CSV, TSV, or plain text) containing known valid values.\n" +
+                "After filtering, click 'Match' to correct OCR mistakes by finding the\n" +
+                "closest match from your list.\n\n" +
+                "Example: If your list contains 'Sample_001' and OCR detected 'Samp1e_0O1',\n" +
+                "the matcher will correct it to 'Sample_001'.\n\n" +
+                "File format:\n" +
+                "  - CSV: Uses first column (header row auto-skipped)\n" +
+                "  - TSV/TXT: Uses first column or whole line\n" +
+                "  - One valid value per line\n\n" +
+                "Uses Levenshtein distance with OCR-aware weighting\n" +
+                "(0/O, 1/l/I confusions have lower penalty)."));
+
+        Button matchBtn = new Button("Match");
+        matchBtn.setStyle("-fx-font-size: 10px; -fx-padding: 2 6 2 6;");
+        matchBtn.setDisable(true); // Enabled when vocabulary is loaded
+        matchBtn.setTooltip(new Tooltip("Match detected text against loaded vocabulary to correct OCR errors"));
+        matchBtn.setOnAction(e -> applyVocabularyMatching());
+
+        // OCR weights toggle
+        ocrWeightsCheckBox = new CheckBox("OCR weights");
+        ocrWeightsCheckBox.setStyle("-fx-font-size: 10px;");
+        ocrWeightsCheckBox.setSelected(false); // Default off for scientific names
+        ocrWeightsCheckBox.setTooltip(new Tooltip(
+                "OCR-Weighted Matching\n\n" +
+                "When ENABLED: Common OCR confusions have lower penalty:\n" +
+                "  - 0/O, 1/l/I, 5/S, 8/B are treated as similar\n" +
+                "  - Better for natural text with accidental letter/number swaps\n\n" +
+                "When DISABLED (default): All character changes have equal cost\n" +
+                "  - Better for scientific sample names like 'PBS_O1' vs 'PBS_01'\n" +
+                "  - Treats intentional letter/number choices as significant"));
+
+        // Status label showing loaded vocabulary info
+        vocabularyStatusLabel = new Label("");
+        vocabularyStatusLabel.setStyle("-fx-font-size: 10px; -fx-text-fill: #666666;");
+
+        // Store match button reference for enabling/disabling
+        loadVocabBtn.setUserData(matchBtn);
+
+        filterBar.getChildren().addAll(loadVocabBtn, helpLabel, ocrWeightsCheckBox, matchBtn, vocabularyStatusLabel);
+
+        return filterBar;
+    }
+
+    /**
+     * Applies a text filter to all field entries' text values.
+     */
+    private void applyTextFilter(qupath.ext.ocr4labels.utilities.TextFilters.TextFilter filter) {
+        if (fieldEntries.isEmpty()) {
+            Dialogs.showWarningNotification("No Fields", "Run OCR first to detect text fields.");
+            return;
+        }
+
+        int modified = 0;
+        for (OCRFieldEntry entry : fieldEntries) {
+            String original = entry.getText();
+            String filtered = filter.apply(original);
+            if (!original.equals(filtered)) {
+                entry.setText(filtered);
+                modified++;
+            }
+        }
+
+        if (modified > 0) {
+            fieldsTable.refresh();
+            updateMetadataPreview();
+            logger.info("Applied filter '{}' to {} field(s)", filter.getName(), modified);
+        } else {
+            Dialogs.showInfoNotification("No Changes",
+                    "Filter '" + filter.getName() + "' did not modify any text.");
+        }
+    }
+
+    /**
+     * Opens a file chooser to load a vocabulary file for OCR correction matching.
+     */
+    private void loadVocabularyFile() {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Load Vocabulary File");
+        chooser.getExtensionFilters().addAll(
+                new FileChooser.ExtensionFilter("All Supported", "*.csv", "*.tsv", "*.txt"),
+                new FileChooser.ExtensionFilter("CSV Files", "*.csv"),
+                new FileChooser.ExtensionFilter("TSV Files", "*.tsv"),
+                new FileChooser.ExtensionFilter("Text Files", "*.txt")
+        );
+
+        // Set initial directory to project folder if available
+        if (project != null) {
+            try {
+                File projectDir = project.getPath().toFile().getParentFile();
+                if (projectDir != null && projectDir.isDirectory()) {
+                    chooser.setInitialDirectory(projectDir);
+                }
+            } catch (Exception e) {
+                logger.debug("Could not get project directory: {}", e.getMessage());
+            }
+        }
+
+        File file = chooser.showOpenDialog(stage);
+        if (file == null) return;
+
+        try {
+            if (textMatcher == null) {
+                textMatcher = new TextMatcher();
+            }
+            textMatcher.loadVocabularyFromFile(file);
+
+            // Update UI to show vocabulary is loaded
+            int count = textMatcher.getVocabularySize();
+            vocabularyStatusLabel.setText(String.format("(%d entries)", count));
+
+            // Enable the Match button - find it in the filter bar
+            // The Match button is after the help label in the filter bar
+            for (javafx.scene.Node node : ((HBox) vocabularyStatusLabel.getParent()).getChildren()) {
+                if (node instanceof Button && "Match".equals(((Button) node).getText())) {
+                    node.setDisable(false);
+                    break;
+                }
+            }
+
+            Dialogs.showInfoNotification("Vocabulary Loaded",
+                    String.format("Loaded %d entries from %s", count, file.getName()));
+
+        } catch (IOException e) {
+            logger.error("Failed to load vocabulary file", e);
+            Dialogs.showErrorMessage("Load Error",
+                    "Failed to load vocabulary file:\n" + e.getMessage());
+        }
+    }
+
+    /**
+     * Applies vocabulary matching to correct OCR errors in detected text fields.
+     * Uses fuzzy matching (Levenshtein distance) to find the closest match
+     * from the loaded vocabulary for each detected text value.
+     */
+    private void applyVocabularyMatching() {
+        if (textMatcher == null || !textMatcher.hasVocabulary()) {
+            Dialogs.showWarningNotification("No Vocabulary",
+                    "Please load a vocabulary file first using 'Load List...'");
+            return;
+        }
+
+        if (fieldEntries.isEmpty()) {
+            Dialogs.showWarningNotification("No Fields",
+                    "Run OCR first to detect text fields.");
+            return;
+        }
+
+        // Apply OCR weights setting from checkbox
+        textMatcher.setUseOCRWeights(ocrWeightsCheckBox.isSelected());
+
+        int corrected = 0;
+        int exact = 0;
+        int noMatch = 0;
+        StringBuilder report = new StringBuilder();
+
+        for (OCRFieldEntry entry : fieldEntries) {
+            String original = entry.getText();
+            if (original == null || original.isEmpty()) {
+                noMatch++;
+                continue;
+            }
+
+            TextMatcher.MatchResult match = textMatcher.findBestMatch(original);
+
+            if (match == null) {
+                noMatch++;
+                report.append(String.format("  '%s' -> (no match found)\n", original));
+            } else if (match.isExactMatch()) {
+                exact++;
+            } else {
+                // Found a fuzzy match - apply correction
+                entry.setText(match.getMatchedValue());
+                corrected++;
+                report.append(String.format("  '%s' -> '%s' (%.0f%% similar)\n",
+                        original, match.getMatchedValue(), match.getSimilarity() * 100));
+            }
+        }
+
+        if (corrected > 0) {
+            fieldsTable.refresh();
+            updateMetadataPreview();
+        }
+
+        // Log what mode was used
+        String modeInfo = ocrWeightsCheckBox.isSelected() ? "OCR-weighted" : "standard";
+        logger.info("Vocabulary matching ({}): corrected={}, exact={}, noMatch={}",
+                modeInfo, corrected, exact, noMatch);
+
+        if (corrected > 0) {
+            Dialogs.showInfoNotification("Matching Complete",
+                    String.format("Corrected %d field(s) using %s matching.", corrected, modeInfo));
+        } else if (exact > 0) {
+            Dialogs.showInfoNotification("No Corrections Needed",
+                    "All detected values already match the vocabulary.");
+        } else {
+            Dialogs.showWarningNotification("No Matches",
+                    "None of the detected values matched the vocabulary.\n\n" +
+                    "Try:\n" +
+                    "  - Toggling 'OCR weights' checkbox\n" +
+                    "  - Checking your vocabulary file contents\n" +
+                    "  - Applying text filters first");
+        }
     }
 
     private HBox createButtonBar() {
