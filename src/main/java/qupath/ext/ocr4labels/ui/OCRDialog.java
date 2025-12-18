@@ -40,6 +40,7 @@ import qupath.lib.projects.ProjectImageEntry;
 import javafx.stage.FileChooser;
 import qupath.ext.ocr4labels.model.OCRTemplate;
 
+import qupath.ext.ocr4labels.utilities.TextFilters;
 import qupath.ext.ocr4labels.utilities.TextMatcher;
 
 import java.awt.image.BufferedImage;
@@ -754,8 +755,7 @@ public class OCRDialog {
         filterLabel.setStyle("-fx-font-size: 11px;");
 
         // Create filter buttons
-        for (qupath.ext.ocr4labels.utilities.TextFilters.TextFilter filter :
-                qupath.ext.ocr4labels.utilities.TextFilters.ALL_FILTERS) {
+        for (TextFilters.TextFilter filter : TextFilters.ALL_FILTERS) {
             Button btn = new Button(filter.getButtonLabel());
             btn.setStyle("-fx-font-size: 10px; -fx-padding: 2 6 2 6;");
             btn.setTooltip(new Tooltip(filter.getTooltip()));
@@ -826,7 +826,7 @@ public class OCRDialog {
     /**
      * Applies a text filter to all field entries' text values.
      */
-    private void applyTextFilter(qupath.ext.ocr4labels.utilities.TextFilters.TextFilter filter) {
+    private void applyTextFilter(TextFilters.TextFilter filter) {
         if (fieldEntries.isEmpty()) {
             Dialogs.showWarningNotification("No Fields", "Run OCR first to detect text fields.");
             return;
