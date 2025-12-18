@@ -749,7 +749,8 @@ public class OCRDialog {
     private HBox createFilterBar() {
         HBox filterBar = new HBox(5);
         filterBar.setAlignment(Pos.CENTER_LEFT);
-        filterBar.setPadding(new Insets(2, 0, 2, 0));
+        filterBar.setPadding(new Insets(5, 5, 5, 5));
+        filterBar.setStyle("-fx-border-color: #cccccc; -fx-border-width: 1; -fx-background-color: #f8f8f8;");
 
         Label filterLabel = new Label("Filter text:");
         filterLabel.setStyle("-fx-font-size: 11px;");
