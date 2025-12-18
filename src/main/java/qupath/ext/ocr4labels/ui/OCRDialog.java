@@ -749,11 +749,12 @@ public class OCRDialog {
     private HBox createFilterBar() {
         HBox filterBar = new HBox(5);
         filterBar.setAlignment(Pos.CENTER_LEFT);
-        filterBar.setPadding(new Insets(5, 5, 5, 5));
-        filterBar.setStyle("-fx-border-color: #cccccc; -fx-border-width: 1; -fx-background-color: #f8f8f8;");
+        filterBar.setPadding(new Insets(10, 10, 10, 10));
+        filterBar.setStyle("-fx-border-color: red; -fx-border-width: 3; -fx-background-color: #ffeeee;");
+        filterBar.setMinHeight(40);
 
-        Label filterLabel = new Label("Filter text:");
-        filterLabel.setStyle("-fx-font-size: 11px;");
+        Label filterLabel = new Label("=== FILTER BAR TEST ===");
+        filterLabel.setStyle("-fx-font-size: 14px; -fx-font-weight: bold; -fx-text-fill: red;");
 
         // Create filter buttons
         for (TextFilters.TextFilter filter : TextFilters.ALL_FILTERS) {
