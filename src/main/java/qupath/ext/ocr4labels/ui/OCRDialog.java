@@ -690,9 +690,17 @@ public class OCRDialog {
 
         buttonBar.getChildren().addAll(addButton, removeButton, clearButton);
 
+        // TEST: Simple labels to verify layout works
+        Label testLabelBefore = new Label("=== TEST LABEL BEFORE FILTER BAR ===");
+        testLabelBefore.setStyle("-fx-background-color: yellow; -fx-text-fill: red; -fx-font-weight: bold; -fx-padding: 5;");
+
         // Text filter toolbar
         HBox filterBar = createFilterBar();
         logger.info("createFieldsPanel: filterBar created with {} children", filterBar.getChildren().size());
+
+        // TEST: Another label after filter bar
+        Label testLabelAfter = new Label("=== TEST LABEL AFTER FILTER BAR ===");
+        testLabelAfter.setStyle("-fx-background-color: cyan; -fx-text-fill: blue; -fx-font-weight: bold; -fx-padding: 5;");
 
         // Template toolbar
         HBox templateBar = new HBox(10);
@@ -741,11 +749,11 @@ public class OCRDialog {
         metadataPreview.setPrefRowCount(3);
         metadataPreview.setStyle("-fx-font-family: monospace;");
 
-        panel.getChildren().addAll(titleLabel, fieldsTable, buttonBar, filterBar, templateBar, previewLabel, metadataPreview);
-        logger.info("createFieldsPanel: panel now has {} children - filterBar should be at index 3", panel.getChildren().size());
+        panel.getChildren().addAll(titleLabel, fieldsTable, buttonBar, testLabelBefore, filterBar, testLabelAfter, templateBar, previewLabel, metadataPreview);
+        logger.info("createFieldsPanel: panel now has {} children", panel.getChildren().size());
         logger.info("  Panel children: {}", panel.getChildren().stream()
                 .map(n -> n.getClass().getSimpleName())
-                .collect(java.util.stream.Collectors.joining(", ")));
+                .collect(Collectors.joining(", ")));
         return panel;
     }
 
