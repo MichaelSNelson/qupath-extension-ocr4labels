@@ -51,6 +51,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.ResourceBundle;
+import java.util.stream.Collectors;
 
 /**
  * Main dialog for OCR processing and field labeling.
@@ -691,6 +692,7 @@ public class OCRDialog {
 
         // Text filter toolbar
         HBox filterBar = createFilterBar();
+        logger.info("createFieldsPanel: filterBar created with {} children", filterBar.getChildren().size());
 
         // Template toolbar
         HBox templateBar = new HBox(10);
@@ -740,6 +742,10 @@ public class OCRDialog {
         metadataPreview.setStyle("-fx-font-family: monospace;");
 
         panel.getChildren().addAll(titleLabel, fieldsTable, buttonBar, filterBar, templateBar, previewLabel, metadataPreview);
+        logger.info("createFieldsPanel: panel now has {} children - filterBar should be at index 3", panel.getChildren().size());
+        logger.info("  Panel children: {}", panel.getChildren().stream()
+                .map(n -> n.getClass().getSimpleName())
+                .collect(java.util.stream.Collectors.joining(", ")));
         return panel;
     }
 
@@ -747,11 +753,17 @@ public class OCRDialog {
      * Creates the filter bar with buttons for text filtering operations.
      */
     private HBox createFilterBar() {
+        logger.info("createFilterBar() called - creating filter bar");
+
         HBox filterBar = new HBox(5);
         filterBar.setAlignment(Pos.CENTER_LEFT);
         filterBar.setPadding(new Insets(10, 10, 10, 10));
         filterBar.setStyle("-fx-border-color: red; -fx-border-width: 3; -fx-background-color: #ffeeee;");
         filterBar.setMinHeight(40);
+        filterBar.setPrefHeight(50);
+        // Ensure filterBar doesn't get collapsed
+        filterBar.setManaged(true);
+        filterBar.setVisible(true);
 
         Label filterLabel = new Label("=== FILTER BAR TEST ===");
         filterLabel.setStyle("-fx-font-size: 14px; -fx-font-weight: bold; -fx-text-fill: red;");
@@ -821,6 +833,9 @@ public class OCRDialog {
         loadVocabBtn.setUserData(matchBtn);
 
         filterBar.getChildren().addAll(loadVocabBtn, helpLabel, ocrWeightsCheckBox, matchBtn, vocabularyStatusLabel);
+
+        logger.info("createFilterBar() complete - filterBar has {} children, visible={}, managed={}",
+                filterBar.getChildren().size(), filterBar.isVisible(), filterBar.isManaged());
 
         return filterBar;
     }
