@@ -762,28 +762,50 @@ public class OCRDialog {
      * Creates the filter bar with checkboxes for text filtering operations.
      * Filters are applied automatically when OCR results are displayed and
      * re-applied when checkboxes are toggled.
+     *
+     * Blue checkboxes = "Keep" filters (keep specific character types)
+     * Red checkboxes = "Remove/Transform" filters (remove or replace characters)
      */
     private HBox createFilterBar() {
-        HBox filterBar = new HBox(5);
+        HBox filterBar = new HBox(3);
         filterBar.setAlignment(Pos.CENTER_LEFT);
         filterBar.setPadding(new Insets(2, 0, 2, 0));
 
         Label filterLabel = new Label("Filters:");
-        filterLabel.setStyle("-fx-font-size: 11px;");
+        filterLabel.setStyle("-fx-font-size: 11px; -fx-font-weight: bold;");
         filterLabel.setTooltip(new Tooltip(
                 "Select filters BEFORE running OCR.\n" +
                 "Filters are applied automatically when text is detected.\n" +
-                "Toggle filters on/off to re-filter the displayed text."));
+                "Toggle filters on/off to re-filter the displayed text.\n\n" +
+                "Blue = Keep these character types\n" +
+                "Red = Remove or transform characters"));
 
-        // Create filter checkboxes
+        // Create filter checkboxes with color coding
+        // Blue = "keep" filters, Red = "remove/transform" filters
         filterCheckBoxes.clear();
+
+        // Keep filters (blue) - these keep specific character types
+        String keepStyle = "-fx-font-size: 10px; -fx-text-fill: #0066cc;";
+        // Remove/transform filters (red) - these remove or replace characters
+        String removeStyle = "-fx-font-size: 10px; -fx-text-fill: #cc3300;";
+
         for (TextFilters.TextFilter filter : TextFilters.ALL_FILTERS) {
             CheckBox cb = new CheckBox(filter.getButtonLabel());
-            cb.setStyle("-fx-font-size: 10px;");
+
+            // Determine if this is a "keep" or "remove" filter based on name
+            boolean isKeepFilter = filter.getName().contains("Only") ||
+                                   filter.getName().equals("Alphanumeric") ||
+                                   filter.getName().equals("Filename Safe");
+
+            cb.setStyle(isKeepFilter ? keepStyle : removeStyle);
             cb.setTooltip(new Tooltip(filter.getTooltip()));
             cb.selectedProperty().addListener((obs, old, selected) -> reapplyFilters());
             filterCheckBoxes.put(filter, cb);
-            filterBar.getChildren().add(cb);
+
+            // Wrap checkbox in a container with right margin for spacing
+            HBox cbContainer = new HBox(cb);
+            cbContainer.setPadding(new Insets(0, 8, 0, 0));
+            filterBar.getChildren().add(cbContainer);
         }
 
         // Add the label at the beginning
