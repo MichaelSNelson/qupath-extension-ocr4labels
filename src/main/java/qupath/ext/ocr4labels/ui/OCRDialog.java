@@ -48,6 +48,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.ResourceBundle;
@@ -114,6 +115,9 @@ public class OCRDialog {
     private TextMatcher textMatcher;
     private Label vocabularyStatusLabel;
     private CheckBox ocrWeightsCheckBox;
+
+    // Text filter checkboxes - applied before OCR results are displayed
+    private final Map<TextFilters.TextFilter, CheckBox> filterCheckBoxes = new LinkedHashMap<>();
 
     /**
      * Shows the OCR dialog for processing project entries.
@@ -613,6 +617,17 @@ public class OCRDialog {
         fieldsTable.setPlaceholder(new Label("Run OCR to detect text fields"));
         fieldsTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
 
+        // Field number column - matches numbers displayed on bounding boxes
+        TableColumn<OCRFieldEntry, String> numCol = new TableColumn<>("#");
+        numCol.setCellValueFactory(data -> {
+            int index = fieldEntries.indexOf(data.getValue()) + 1;
+            return new SimpleStringProperty(String.valueOf(index));
+        });
+        numCol.setMinWidth(30);
+        numCol.setMaxWidth(40);
+        numCol.setPrefWidth(35);
+        numCol.setSortable(false);
+
         // Text column - flexible width, user can resize
         TableColumn<OCRFieldEntry, String> textCol = new TableColumn<>(resources.getString("column.text"));
         textCol.setCellValueFactory(data -> data.getValue().textProperty());
@@ -650,7 +665,7 @@ public class OCRDialog {
         confCol.setMaxWidth(60);
         confCol.setPrefWidth(55);
 
-        fieldsTable.getColumns().addAll(textCol, keyCol, confCol);
+        fieldsTable.getColumns().addAll(numCol, textCol, keyCol, confCol);
         VBox.setVgrow(fieldsTable, Priority.ALWAYS);
 
         // Handle selection
@@ -744,23 +759,31 @@ public class OCRDialog {
     }
 
     /**
-     * Creates the filter bar with buttons for text filtering operations.
+     * Creates the filter bar with checkboxes for text filtering operations.
+     * Filters are applied automatically when OCR results are displayed and
+     * re-applied when checkboxes are toggled.
      */
     private HBox createFilterBar() {
         HBox filterBar = new HBox(5);
         filterBar.setAlignment(Pos.CENTER_LEFT);
         filterBar.setPadding(new Insets(2, 0, 2, 0));
 
-        Label filterLabel = new Label("Filter text:");
+        Label filterLabel = new Label("Filters:");
         filterLabel.setStyle("-fx-font-size: 11px;");
+        filterLabel.setTooltip(new Tooltip(
+                "Select filters BEFORE running OCR.\n" +
+                "Filters are applied automatically when text is detected.\n" +
+                "Toggle filters on/off to re-filter the displayed text."));
 
-        // Create filter buttons
+        // Create filter checkboxes
+        filterCheckBoxes.clear();
         for (TextFilters.TextFilter filter : TextFilters.ALL_FILTERS) {
-            Button btn = new Button(filter.getButtonLabel());
-            btn.setStyle("-fx-font-size: 10px; -fx-padding: 2 6 2 6;");
-            btn.setTooltip(new Tooltip(filter.getTooltip()));
-            btn.setOnAction(e -> applyTextFilter(filter));
-            filterBar.getChildren().add(btn);
+            CheckBox cb = new CheckBox(filter.getButtonLabel());
+            cb.setStyle("-fx-font-size: 10px;");
+            cb.setTooltip(new Tooltip(filter.getTooltip()));
+            cb.selectedProperty().addListener((obs, old, selected) -> reapplyFilters());
+            filterCheckBoxes.put(filter, cb);
+            filterBar.getChildren().add(cb);
         }
 
         // Add the label at the beginning
@@ -824,32 +847,44 @@ public class OCRDialog {
     }
 
     /**
-     * Applies a text filter to all field entries' text values.
+     * Applies all currently selected (checked) filters to the given text.
+     * Filters are applied in order as displayed in the filter bar.
+     *
+     * @param text The original text to filter
+     * @return The filtered text
      */
-    private void applyTextFilter(TextFilters.TextFilter filter) {
+    private String applyActiveFilters(String text) {
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+
+        String result = text;
+        for (Map.Entry<TextFilters.TextFilter, CheckBox> entry : filterCheckBoxes.entrySet()) {
+            if (entry.getValue().isSelected()) {
+                result = entry.getKey().apply(result);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Re-applies active filters to all field entries.
+     * Called when filter checkboxes are toggled.
+     * Uses the original OCR text stored in each entry and applies current filter selection.
+     */
+    private void reapplyFilters() {
         if (fieldEntries.isEmpty()) {
-            Dialogs.showWarningNotification("No Fields", "Run OCR first to detect text fields.");
             return;
         }
 
-        int modified = 0;
         for (OCRFieldEntry entry : fieldEntries) {
-            String original = entry.getText();
-            String filtered = filter.apply(original);
-            if (!original.equals(filtered)) {
-                entry.setText(filtered);
-                modified++;
-            }
+            String original = entry.getOriginalText();
+            String filtered = applyActiveFilters(original);
+            entry.setText(filtered);
         }
 
-        if (modified > 0) {
-            fieldsTable.refresh();
-            updateMetadataPreview();
-            logger.info("Applied filter '{}' to {} field(s)", filter.getName(), modified);
-        } else {
-            Dialogs.showInfoNotification("No Changes",
-                    "Filter '" + filter.getName() + "' did not modify any text.");
-        }
+        fieldsTable.refresh();
+        updateMetadataPreview();
     }
 
     /**
@@ -1094,12 +1129,16 @@ public class OCRDialog {
         for (TextBlock block : result.getTextBlocks()) {
             if (block.getType() == TextBlock.BlockType.LINE && !block.isEmpty()) {
                 String suggestedKey = findMatchingMetadataKey(block.getBoundingBox(), prefix + "field_" + index);
+                // Store original text, but display filtered version
+                String originalText = block.getText();
                 OCRFieldEntry entry = new OCRFieldEntry(
-                        block.getText(),
+                        originalText,
                         suggestedKey,
                         block.getConfidence(),
                         block.getBoundingBox()
                 );
+                // Apply active filters to display text
+                entry.setText(applyActiveFilters(originalText));
                 fieldEntries.add(entry);
                 index++;
             }
@@ -1110,12 +1149,16 @@ public class OCRDialog {
             for (TextBlock block : result.getTextBlocks()) {
                 if (block.getType() == TextBlock.BlockType.WORD && !block.isEmpty()) {
                     String suggestedKey = findMatchingMetadataKey(block.getBoundingBox(), prefix + "field_" + index);
+                    // Store original text, but display filtered version
+                    String originalText = block.getText();
                     OCRFieldEntry entry = new OCRFieldEntry(
-                            block.getText(),
+                            originalText,
                             suggestedKey,
                             block.getConfidence(),
                             block.getBoundingBox()
                     );
+                    // Apply active filters to display text
+                    entry.setText(applyActiveFilters(originalText));
                     fieldEntries.add(entry);
                     index++;
                 }
@@ -1365,12 +1408,16 @@ public class OCRDialog {
                     );
                 }
 
+                // Store original text, but display filtered version
+                String originalText = block.getText();
                 OCRFieldEntry entry = new OCRFieldEntry(
-                        block.getText(),
+                        originalText,
                         suggestedKey,
                         block.getConfidence(),
                         adjustedBox
                 );
+                // Apply active filters to display text
+                entry.setText(applyActiveFilters(originalText));
                 fieldEntries.add(entry);
                 startIndex++;
             }
@@ -1393,12 +1440,16 @@ public class OCRDialog {
                         );
                     }
 
+                    // Store original text, but display filtered version
+                    String originalText = block.getText();
                     OCRFieldEntry entry = new OCRFieldEntry(
-                            block.getText(),
+                            originalText,
                             suggestedKey,
                             block.getConfidence(),
                             adjustedBox
                     );
+                    // Apply active filters to display text
+                    entry.setText(applyActiveFilters(originalText));
                     fieldEntries.add(entry);
                     startIndex++;
                 }
@@ -1690,7 +1741,8 @@ public class OCRDialog {
                         int idxB = Integer.parseInt(b.getMetadataKey().replaceAll("\\D+", ""));
                         return Integer.compare(idxA, idxB);
                     });
-                    updateMetadataPreview();
+                    // Apply active filters to extracted text
+                    reapplyFilters();
                     drawBoundingBoxes();
                     Dialogs.showInfoNotification("Template Applied",
                             String.format("Extracted text from %d fixed positions.", fieldEntries.size()));
@@ -1891,19 +1943,24 @@ public class OCRDialog {
 
     /**
      * Data class for table entries.
+     * Stores both original OCR text and filtered display text.
      */
     public static class OCRFieldEntry {
-        private final SimpleStringProperty text;
+        private final String originalText;  // Original OCR result, never modified
+        private final SimpleStringProperty text;  // Displayed text (may be filtered)
         private final SimpleStringProperty metadataKey;
         private final float confidence;
         private final BoundingBox boundingBox;
 
         public OCRFieldEntry(String text, String metadataKey, float confidence, BoundingBox boundingBox) {
+            this.originalText = text;
             this.text = new SimpleStringProperty(text);
             this.metadataKey = new SimpleStringProperty(metadataKey);
             this.confidence = confidence;
             this.boundingBox = boundingBox;
         }
+
+        public String getOriginalText() { return originalText; }
 
         public String getText() { return text.get(); }
         public void setText(String value) { text.set(value); }

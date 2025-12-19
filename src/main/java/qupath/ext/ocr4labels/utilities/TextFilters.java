@@ -76,7 +76,7 @@ public class TextFilters {
      */
     public static final TextFilter NO_WHITESPACE = new TextFilter(
             "No Whitespace",
-            "_ _",
+            "A B->A_B",
             "Replace all whitespace (spaces, tabs, newlines) with underscores.",
             "\\s+",
             "_"
