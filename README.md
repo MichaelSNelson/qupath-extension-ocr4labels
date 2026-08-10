@@ -15,6 +15,9 @@ A QuPath extension that performs OCR (Optical Character Recognition) and barcode
 - **Text Filtering**: Clean up OCR results with one-click character filters
 - **Vocabulary Matching**: Correct OCR errors by matching against known valid values
 - **Rotated Label Support**: Automatic orientation detection for sideways or upside-down labels
+- **Literal Transcription**: OCR reports what it saw instead of correcting toward English words
+- **Region Refresh**: Re-read every drawn region in one pass after adding or adjusting regions
+- **Multi-Select and Undo**: Edit several rows at once, with undo/redo for every change
 
 ## Requirements
 
@@ -50,8 +53,9 @@ Before using OCR, you need to download Tesseract language data files:
 3. The OCR Dialog opens showing all project images on the left
 4. Select an image from the list (or use the currently open image)
 5. Configure scan settings:
-   - **Scope**: "Full Image" (entire label) or "Selection" (drawn rectangle)
-   - **Type**: "Text" (OCR), "Barcode" (ZXing), or "Auto" (barcode first, then OCR)
+   - **Scope**: "Full Image" (entire label), "Selection" (drawn rectangle), or
+     "Drawn Regions" (refresh the regions already listed)
+   - **Decode As**: "Text" (OCR), "Barcode" (ZXing), or "Try Both" (barcode first, then OCR)
    - **Min Conf**: Minimum confidence threshold for text results
 6. Click **Scan** to detect content on the label
 7. Review detected content in the table:
@@ -59,7 +63,14 @@ Before using OCR, you need to download Tesseract language data files:
    - Edit the **Metadata Key** column to set field names
 8. Click **Apply** to save metadata to the selected image
 
-**Important:** Each click of **Scan** clears previous results and starts fresh. This lets you iteratively adjust settings (e.g., lower the Min Conf threshold, change Type, or switch Scope) and immediately see the effect without accumulating stale results. Use **Ctrl+Z** to undo if needed.
+**Important:** In the "Full Image" and "Selection" scopes, each click of **Scan** clears
+previous results and starts fresh. This lets you iteratively adjust settings (e.g., lower
+the Min Conf threshold, change Decode As, or switch Scope) and immediately see the effect
+without accumulating stale results.
+
+The "Drawn Regions" scope is the exception: it updates the existing rows in place instead
+of replacing them, so you keep the metadata keys and positions you have already set up.
+Use **Ctrl+Z**, or the **Undo** button under the table, to reverse either kind of scan.
 
 ### Region Selection Scanning
 
@@ -85,6 +96,14 @@ You can define template regions manually without scanning, which is useful when 
 5. Repeat steps 2-4 for each region on the label
 6. Edit the **Metadata Key** column to set meaningful field names
 7. Click **Save Template...** to save the regions for batch use
+
+Alternatively, work in the other direction: click **Add Field** to create the row first,
+then draw the rectangle it should cover. See
+[Add Field and Add Region](#add-field-and-add-region) for which to reach for.
+
+To check what the regions actually read before committing to a template, set **Scope** to
+"Drawn Regions" and click **Rescan Regions**. Every region is decoded and its text filled
+into the table, without disturbing the positions or keys you just set.
 
 The saved template preserves each region's position, type, and metadata key. When applied to other slides, each region is cropped and decoded according to its type.
 
@@ -151,16 +170,39 @@ Region types are color-coded on the overlay:
 
 | Control | Description |
 |---------|-------------|
-| **Scope** | "Full Image" scans the entire label; "Selection" scans a drawn rectangle |
+| **Scope** | What to scan: "Full Image", "Selection", or "Drawn Regions" (see below) |
 | **Decode As** | Content type: Text (OCR), Barcode (ZXing), or Try Both (barcode then OCR) |
-| **Scan** | Runs detection using current Scope and Decode As settings. Clears previous results each time |
-| **Draw Region** | Toggle drawing mode to select an area on the label image |
-| **Add Region** | Adds the drawn rectangle as a template field without scanning (for manual template creation) |
-| **Clear** | Clears the current drawn selection |
+| **Scan** | Runs detection using current Scope and Decode As settings |
+| **Draw Region** | Toggle drawing mode to mark an area on the label image |
+| **Add Region** | Adds the drawn rectangle as a new row without scanning it |
+| **Clear** | Discards the rectangle being drawn (does not remove rows from the table) |
 | **Mode** | Page segmentation mode - controls how Tesseract analyzes the image layout |
 | **Min Conf** | Minimum confidence threshold (0-100%) - text below this is filtered out |
 | **Invert** | Inverts image colors - use for labels with light text on dark backgrounds |
 | **Enhance** | Improves image contrast before OCR - recommended for faded labels |
+
+### Scan Scopes
+
+| Scope | What it does | Effect on the table |
+|-------|--------------|---------------------|
+| **Full Image** | Scans the entire label | **Replaces** all rows |
+| **Selection** | Scans only the drawn rectangle | **Replaces** all rows |
+| **Drawn Regions** | Re-reads every row that already has a region | **Updates in place** |
+
+**Drawn Regions** is the refresh path. Use it when you have added a few regions and want
+the whole Detected Fields list brought up to date in one go, or after changing **Invert**,
+**Enhance** or **Mode** to see the effect across every field at once. It:
+
+- keeps row order, metadata keys and box positions exactly as they are
+- refreshes each row's **Detected Text**, **Conf** and detected type
+- decodes each row by **its own** Decode As value, not the toolbar's, so a mixed
+  text/barcode list refreshes correctly in a single pass
+- leaves rows with no region untouched
+- re-applies any active text filters, as a fresh scan would
+
+The Scan button relabels itself to **Rescan Regions** in this scope. Because it is a single
+undo step, Ctrl+Z restores the previous text for every field at once if the refresh goes
+the wrong way.
 
 ### Page Segmentation Modes
 
@@ -198,9 +240,43 @@ Region types are color-coded on the overlay:
 
 | Button | Description |
 |--------|-------------|
-| **Add Field** | Manually add a new empty field row |
-| **Remove** | Delete the selected field row |
-| **Clear All** | Remove all detected fields |
+| **Add Field** | Adds one empty row, then arms drawing so you can give it a region |
+| **Remove** | Deletes the selected rows |
+| **Clear All** | Removes every row |
+| **Undo** | Reverses the last change to the field list (Ctrl+Z) |
+| **Redo** | Reapplies the last undone change (Ctrl+Y or Ctrl+Shift+Z) |
+
+#### Selecting Multiple Rows
+
+The Detected Fields table supports multi-select. **Ctrl+click** adds individual rows to
+the selection and **Shift+click** extends a range. **Remove** acts on every selected row
+at once, and each selected row's box is highlighted in yellow on the label image.
+
+#### Add Field and Add Region
+
+These are the two directions of the same operation, and it is worth knowing which you want:
+
+| Button | Order of work | Use when |
+|--------|---------------|----------|
+| **Add Region** | Draw the rectangle first, then get a row for it | You are marking up a label region by region |
+| **Add Field** | Get the row first, then draw its rectangle | You know the field you want and are placing it |
+
+**Add Field** creates the row immediately and switches **Draw Region** on, highlighting it
+in orange and relabelling it with the new row's metadata key. The next rectangle you drag on
+the label is assigned to that row, which then behaves like any other region: **Scope: Drawn
+Regions -> Scan** reads its text, and **Save Template** stores its position.
+
+Press **Escape** (or click **Clear**) to keep the row without giving it a region. A row with
+no region is never scanned - type its value into the **Detected Text** column by hand and it
+is still written to metadata on **Apply**. That is the right choice for values that are not
+on the label at all, such as a constant study ID applied across a batch.
+
+#### Undo Coverage
+
+Undo covers every change to the field list: removals, Clear All, edits to detected text
+and metadata keys, added and assigned regions, vocabulary matching, text filters, and whole
+scans. Each scan or rescan is one undo step, so Ctrl+Z after a refresh restores every field
+at once. History holds 50 steps and is cleared when you switch to a different image.
 
 ### Text Filter Bar
 
@@ -375,6 +451,87 @@ Templates store field positions and types for batch processing:
 - `regionType`: `"TEXT"`, `"BARCODE"`, or `"AUTO"` (defaults to `"TEXT"` if missing)
 - `normalizedX/Y/Width/Height`: Position as fraction of image dimensions (0.0-1.0)
 - `dilationFactor`: Expansion factor for bounding boxes (default 0.2 = 20%)
+
+---
+
+## Literal Text and the @ Symbol Problem
+
+### The symptom
+
+OCR a label carrying `histology@lji.org` and Tesseract may return `histoloawalli.org`.
+The `@` has not merely been missed - it has been *replaced*, and the characters around it
+have been dragged along with it. Aligning the two strings shows the damage is local to the
+unwordlike part:
+
+```
+h i s t o l o g y @ l j i . o r g     <- what the label says
+h i s t o l o a w a l l i . o r g     <- what OCR returned
+              ^ ^ ^   ^
+```
+
+`histolo` and `.org` survive; `gy@lj` does not.
+
+### Why it happens
+
+Tesseract's LSTM engine does not classify characters independently. It runs a beam search
+that scores each candidate character path against the language's dictionaries, and it
+prefers paths that look like plausible English. `eng.traineddata` ships several of these:
+a word list, a frequent-word list, a number pattern list, and - most relevant here - a
+**punctuation model** describing where punctuation legitimately falls in English text.
+
+An `@` in the middle of a token is something English prose essentially never does. So even
+when the character classifier saw the `@` perfectly well, the language model scores that
+path poorly and the beam search walks around it, emitting letters instead. The neighbouring
+characters get rewritten too, because the search optimizes the whole path rather than each
+character in isolation.
+
+This is not an `@`-specific bug. The same mechanism corrupts underscores in sample codes,
+mixed letter/digit accession numbers, and anything else that is correct but not word-shaped.
+The `@` is simply the most conspicuous case, because it is both structurally distinctive
+and guaranteed to be non-dictionary.
+
+Two other factors make `@` unusually fragile, and are worth ruling out separately:
+
+- **It is the densest glyph in ASCII.** A small `a` inside an open ring, with a gap between
+  them roughly one stroke wide. At low resolution or slight defocus that gap closes, and what
+  remains - a blob with a single hole - is topologically indistinguishable from `a` or `o`.
+- **Enhance binarizes before Tesseract sees the image.** The **Enhance** option applies
+  adaptive thresholding, and a thin gap is the first thing a mean-threshold binarization
+  closes. If an `@` reads correctly with Enhance off and wrongly with it on, that is the
+  cause rather than the language model.
+
+### The fix
+
+**Literal text (no dictionary)** switches the language model off, so Tesseract reports what
+the character classifier actually saw. It is **on by default**, because slide labels are
+overwhelmingly accession numbers, sample codes, dates and e-mail addresses - none of them
+dictionary words - so the language model corrupts more than it repairs.
+
+Turn it **off** only if your labels carry ordinary words, such as handwritten tissue names
+or staining notes, where dictionary correction genuinely helps.
+
+Under the hood this disables `load_system_dawg`, `load_freq_dawg`, `load_punc_dawg`,
+`load_number_dawg` and `load_bigram_dawg`. These are read while Tesseract initialises, so
+the extension passes them in a config file at init rather than through `setVariable`, which
+is applied afterwards and would be silently ignored. It is the same mechanism as Tesseract's
+own bundled `tessconfigs/bazaar` config.
+
+In scripts, use `literal()` or `useDictionary()` on `OCRBuilder`, or `.literalText(boolean)`
+on `OCRConfiguration.builder()`. Literal is the default in both.
+
+### If the text is still wrong
+
+Literal mode stops the language model from rewriting correct readings. It cannot recover
+characters the classifier never resolved. When a glyph is genuinely lost to blur or
+resolution, the remaining tools are:
+
+- **Draw Region** around the difficult text and scan it alone with **Single Line** or
+  **Single Word** mode, which avoids layout-analysis mistakes
+- Toggle **Enhance** off, in case binarization is closing thin gaps
+- **Vocabulary Matching** against a list of known valid values, which fixes the value from
+  the outside rather than trying to read it better
+- A **barcode**, where the label carries one - note that in the example above the QR code
+  decoded `histology@lji.org` perfectly while OCR did not
 
 ---
 
@@ -723,8 +880,24 @@ decodeRegionAsync(...) -> CompletableFuture<DecodedResult>
 .enhanceContrast(boolean)   // true/false
 .autoRotate(boolean)        // true/false
 .detectOrientation(boolean) // true/false
+.literalText(boolean)       // true/false - default true, no dictionary correction
+.characterWhitelist(String) // e.g. "0123456789", or null for no restriction
 .build()
 ```
+
+**OCRBuilder** (the fluent scripting API) exposes the same switch as a pair of methods:
+
+```groovy
+import qupath.ext.ocr4labels.OCRBuilder
+
+// Default: literal transcription, no dictionary correction
+List<String> lines = new OCRBuilder().sparseText().literal().run()
+
+// Opt back in to dictionary correction, for labels carrying ordinary words
+List<String> prose = new OCRBuilder().sparseText().useDictionary().run()
+```
+
+See [Literal Text](#literal-text-and-the-symbol-problem) for why literal is the default.
 
 ---
 
@@ -757,6 +930,7 @@ Status indicators show `[Installed]` or `[Not found]` for each file.
 |---------|-------------|
 | **Detection Mode** | Default page segmentation mode |
 | **Confidence Threshold** | Default minimum confidence (0-100%) |
+| **Literal text (no dictionary)** | Report the characters OCR saw, without correcting them toward English words. **On by default** - see [Literal Text](#literal-text-and-the-symbol-problem) |
 
 ### Image Enhancement
 
@@ -787,7 +961,7 @@ Status indicators show `[Installed]` or `[Not found]` for each file.
 
 1. Open a slide with a label
 2. **Extensions > OCR for Labels > Run OCR on Label**
-3. Click **Run OCR**
+3. Leave **Scope** on "Full Image" and click **Scan**
 4. Edit metadata keys: `PBS_B_010` -> Key: `Sample_ID`
 5. Click **Apply**
 6. Check metadata in QuPath's image properties
@@ -796,8 +970,8 @@ Status indicators show `[Installed]` or `[Not found]` for each file.
 
 1. Open a slide with a QR code or barcode on the label
 2. **Extensions > OCR for Labels > Run OCR on Label**
-3. Click **Find Barcodes**
-4. Barcode(s) appear in the table with blue bounding boxes
+3. Set **Decode As** to "Barcode" and click **Scan**
+4. Barcode(s) appear in the table with orange bounding boxes
 5. Edit metadata key: `ABC123XYZ` -> Key: `Specimen_ID`
 6. Click **Apply**
 
@@ -805,10 +979,12 @@ Status indicators show `[Installed]` or `[Not found]` for each file.
 
 1. Open a sample image with both text and barcode on label
 2. **Extensions > OCR for Labels > Run OCR on Label**
-3. Click **Run OCR** to detect text regions
-4. Click **Find Barcodes** to detect barcode regions
-5. Edit metadata keys for each field
-6. Change Type column to **Barcode** for barcode fields (if not auto-detected)
+3. Set **Decode As** to "Try Both" and click **Scan** - barcodes are found first,
+   then OCR fills in the remaining text
+4. Edit metadata keys for each field
+5. Correct the **Decode As** column on any row that was typed wrongly
+6. Set **Scope** to "Drawn Regions" and click **Rescan Regions** to re-read the
+   corrected rows with the right decoder
 7. Click **Save Template...** -> save as `mixed_template.json`
 8. Use template for batch processing
 
@@ -817,7 +993,7 @@ Status indicators show `[Installed]` or `[Not found]` for each file.
 1. Open a project with 50+ slides
 2. **Extensions > OCR for Labels > Run OCR on Project...**
 3. Click **Create from Current Image**
-4. In the OCR dialog, run OCR and set metadata keys
+4. In the OCR dialog, click **Scan** and set metadata keys
 5. Click **Save Template...** -> save as `lab_template.json`
 6. Close OCR dialog
 7. Click **Load Template...** -> select `lab_template.json`
@@ -854,13 +1030,15 @@ For natural text (not scientific codes), enable **OCR weights** checkbox before 
 - Lower the **Min Conf** slider
 - Enable **Enhance** for faded labels
 - Check **Invert** for light-on-dark text
+- After changing any of these, set **Scope** to "Drawn Regions" and click
+  **Rescan Regions** to re-read existing fields with the new settings
 
 ### No barcodes detected
 
-- Click **Find Barcodes** to scan the entire image
+- Set **Scope** to "Full Image" and **Decode As** to "Barcode", then click **Scan**
 - Try **Invert** for light barcodes on dark backgrounds
 - Ensure barcode is not too small or damaged
-- Use **Select Region** to manually select the barcode area
+- Use **Draw Region** to mark the barcode area manually
 
 ### Rotated or upside-down text
 
@@ -870,6 +1048,9 @@ For natural text (not scientific codes), enable **OCR weights** checkbox before 
 
 ### Wrong characters detected
 
+- Check that **Literal text (no dictionary)** is enabled in Settings. If OCR is
+  turning codes and e-mail addresses into word-like nonsense, this is almost always
+  why - see [Literal Text](#literal-text-and-the-symbol-problem)
 - Use text filters to clean up results
 - Load a vocabulary file and use **Match** to correct
 - Try enabling/disabling **OCR weights** depending on your text type
@@ -883,7 +1064,7 @@ For natural text (not scientific codes), enable **OCR weights** checkbox before 
 ### Barcode detected as wrong format
 
 - ZXing auto-detects format; this is usually correct
-- If issues persist, use **Select Region** with **Barcode** type
+- If issues persist, use **Draw Region** with **Decode As** set to "Barcode"
 - Ensure the barcode is not partially obscured
 
 ---

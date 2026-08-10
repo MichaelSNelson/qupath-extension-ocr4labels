@@ -366,10 +366,32 @@ public class OCRSettingsDialog {
 
         HBox confBox = new HBox(10, confSlider, confValue);
 
+        // Literal transcription - disables Tesseract's language dictionaries
+        Label literalLabel = new Label("Text Style:");
+        literalLabel.setTooltip(new Tooltip(
+                "Whether to let the English dictionary correct what OCR reads."));
+
+        CheckBox literalCb = new CheckBox("Literal text (no dictionary)");
+        literalCb.setSelected(OCRPreferences.isLiteralText());
+        literalCb.setTooltip(new Tooltip(
+                "Report the characters OCR actually saw, without correcting them\n" +
+                "toward English words. Recommended, and on by default.\n\n" +
+                "Slide labels are mostly sample codes, accession numbers, dates and\n" +
+                "e-mail addresses. None of those are dictionary words, so the language\n" +
+                "model rewrites correct readings into wrong ones - it is what turns\n" +
+                "'histology@lji.org' into 'histoloawalli.org'.\n\n" +
+                "Turn this OFF only if your labels carry ordinary words, such as\n" +
+                "handwritten tissue names or staining notes, where the dictionary\n" +
+                "repairs more than it breaks."));
+        literalCb.selectedProperty().addListener((obs, old, newVal) ->
+                OCRPreferences.setLiteralText(newVal));
+
         grid.add(psmLabel, 0, 0);
         grid.add(psmCombo, 1, 0);
         grid.add(confLabel, 0, 1);
         grid.add(confBox, 1, 1);
+        grid.add(literalLabel, 0, 2);
+        grid.add(literalCb, 1, 2);
 
         pane.setContent(grid);
         return pane;
@@ -421,7 +443,7 @@ public class OCRSettingsDialog {
         autoRunCb.setSelected(OCRPreferences.isAutoRunOnEntrySwitch());
         autoRunCb.setTooltip(new Tooltip(
                 "Automatically run OCR when you select a different image in the project list.\n\n" +
-                "When disabled, you must click the Run OCR button after selecting each image.\n" +
+                "When disabled, you must click the Scan button after selecting each image.\n" +
                 "Disable this for faster navigation through many images."));
         autoRunCb.selectedProperty().addListener((obs, old, newVal) ->
                 OCRPreferences.setAutoRunOnEntrySwitch(newVal));

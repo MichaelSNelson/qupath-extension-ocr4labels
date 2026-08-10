@@ -342,6 +342,7 @@ public class OCR4Labels {
                 .language(OCRPreferences.getLanguage())
                 .detectOrientation(OCRPreferences.isDetectOrientation())
                 .autoRotate(OCRPreferences.isAutoRotate())
+                .literalText(OCRPreferences.isLiteralText())
                 .build();
     }
 

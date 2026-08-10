@@ -17,6 +17,9 @@ import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
 import java.awt.image.RescaleOp;
 import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -33,6 +36,10 @@ public class OCREngine {
     private String tessdataPath;
     private int currentPageSegMode = ITessAPI.TessPageSegMode.PSM_AUTO;
     private boolean osdAvailable = false;
+
+    // Staged once per JVM; see applyLiteralTextMode(boolean)
+    private static File literalTextConfigFile = null;
+    private static boolean literalTextConfigFailed = false;
 
     /**
      * Creates a new OCR engine instance.
@@ -256,6 +263,90 @@ public class OCREngine {
         } else {
             // Clear any previously set whitelist
             tesseract.setVariable("tessedit_char_whitelist", "");
+        }
+
+        applyLiteralTextMode(config.isLiteralText());
+    }
+
+    /**
+     * Switches Tesseract's language dictionaries on or off.
+     *
+     * <p>The LSTM decoder is a beam search that scores candidate character paths
+     * against the language's dictionaries, so it prefers readings that look like real
+     * words. Slide labels are accession numbers, sample codes, dates and e-mail
+     * addresses -- none of them dictionary words -- so that bias rewrites correct
+     * character runs into wrong ones. It is what turns "histology@lji.org" into
+     * "histoloawalli.org": punc-dawg models "@" mid-token as implausible because
+     * English prose almost never does it, so the beam search walks around the "@"
+     * even when the classifier saw one.</p>
+     *
+     * <p>The dictionaries are loaded during Tesseract's Init, which is why this
+     * has to go through a config file rather than {@code setVariable}: Tess4J applies
+     * {@code setVariable} entries with {@code TessBaseAPISetVariable} <i>after</i>
+     * {@code TessBaseAPIInit1} has already loaded them, so setting them that way is a
+     * silent no-op. Config files named at Init are read before the dictionaries load.
+     * This is the same mechanism as Tesseract's own bundled {@code tessconfigs/bazaar}
+     * config, which is nothing but {@code load_system_dawg F} / {@code load_freq_dawg F}.</p>
+     *
+     * @param literal true to disable the dictionaries
+     */
+    private void applyLiteralTextMode(boolean literal) {
+        if (!literal) {
+            tesseract.setConfigs(null);
+            logger.debug("Language dictionaries enabled (literal text mode off)");
+            return;
+        }
+
+        File configFile = getLiteralTextConfigFile();
+        if (configFile == null) {
+            // Could not stage the config file - fall back to dictionary-based decoding
+            // rather than silently pretending literal mode is active.
+            tesseract.setConfigs(null);
+            logger.warn("Literal text mode requested but the Tesseract config file could not be "
+                    + "created - decoding WITH dictionaries instead. Text such as e-mail "
+                    + "addresses and sample codes may be corrected toward English words.");
+            return;
+        }
+
+        tesseract.setConfigs(List.of(configFile.getAbsolutePath()));
+        logger.debug("Language dictionaries disabled (literal text mode on) via {}", configFile);
+    }
+
+    /**
+     * Lazily writes the literal-text Tesseract config file and returns it.
+     * Created once per JVM in the temp directory and removed on exit.
+     *
+     * @return the config file, or null if it could not be written
+     */
+    private static synchronized File getLiteralTextConfigFile() {
+        if (literalTextConfigFile != null && literalTextConfigFile.exists()) {
+            return literalTextConfigFile;
+        }
+        if (literalTextConfigFailed) {
+            return null;
+        }
+        try {
+            File file = File.createTempFile("ocr4labels-literal", ".config");
+            file.deleteOnExit();
+            // Tesseract config syntax: one "name value" pair per line, T/F for booleans.
+            String contents = String.join(System.lineSeparator(),
+                    "# Written by qupath-extension-ocr4labels - literal text mode.",
+                    "# Disables the language model so Tesseract reports the characters it",
+                    "# actually saw instead of the nearest dictionary-plausible reading.",
+                    "load_system_dawg F",
+                    "load_freq_dawg F",
+                    "load_punc_dawg F",
+                    "load_number_dawg F",
+                    "load_bigram_dawg F",
+                    "");
+            Files.writeString(file.toPath(), contents, StandardCharsets.US_ASCII);
+            literalTextConfigFile = file;
+            logger.debug("Wrote literal text config to {}", file);
+            return file;
+        } catch (IOException e) {
+            literalTextConfigFailed = true;
+            logger.warn("Could not write literal text config file: {}", e.getMessage());
+            return null;
         }
     }
 

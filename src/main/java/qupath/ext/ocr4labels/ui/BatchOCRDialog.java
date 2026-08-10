@@ -211,7 +211,7 @@ public class BatchOCRDialog {
 
         Button createFromCurrentBtn = new Button("Create from Current Image");
         createFromCurrentBtn.setTooltip(new Tooltip(
-                "Run OCR on the currently open image and use its fields as a template"));
+                "Scan the currently open image and use its fields as a template"));
         createFromCurrentBtn.setOnAction(e -> createTemplateFromCurrentImage());
 
         Button loadTemplateBtn = new Button("Load Template...");
@@ -668,6 +668,10 @@ public class BatchOCRDialog {
         applyButton.setDisable(true); // Enabled after processing
 
         Button cancelButton = new Button("Cancel");
+        cancelButton.setTooltip(new Tooltip(
+                "Stop any batch run in progress and close the dialog.\n\n"
+                + "Metadata already written with 'Apply Metadata' is kept;\n"
+                + "results still in the table are discarded."));
         cancelButton.setOnAction(e -> {
             processingCancelled.set(true);
             stage.close();
@@ -682,7 +686,7 @@ public class BatchOCRDialog {
         // This allows users to edit metadata keys and save templates with proper positions
         Dialogs.showInfoNotification("Create Template",
                 "The OCR dialog will open. Use it to:\n\n" +
-                "1. Run OCR and adjust detected fields\n" +
+                "1. Scan the label and adjust detected fields\n" +
                 "2. Edit metadata key names as needed\n" +
                 "3. Click 'Save Template...' to save\n\n" +
                 "Then load the template here for batch processing.");
@@ -724,6 +728,7 @@ public class BatchOCRDialog {
                         .language(OCRPreferences.getLanguage())
                         .minConfidence(OCRPreferences.getMinConfidence())
                         .enhanceContrast(OCRPreferences.isEnhanceContrast())
+                        .literalText(OCRPreferences.isLiteralText())
                         .build();
 
                 OCRResult result = ocrEngine.processImage(labelImage, config);
@@ -926,6 +931,7 @@ public class BatchOCRDialog {
                         .language(OCRPreferences.getLanguage())
                         .minConfidence(OCRPreferences.getMinConfidence())
                         .enhanceContrast(OCRPreferences.isEnhanceContrast())
+                        .literalText(OCRPreferences.isLiteralText())
                         .build();
             }
 

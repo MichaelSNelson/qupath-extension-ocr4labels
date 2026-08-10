@@ -30,6 +30,9 @@ public class OCRPreferences {
     private static final String DEFAULT_METADATA_PREFIX = "OCR_";
     private static final String DEFAULT_LABEL_IMAGE_KEYWORDS = "label,barcode";
     private static final boolean DEFAULT_AUTO_RUN_ON_ENTRY_SWITCH = true;
+    // On by default: slide labels carry codes, not prose, so Tesseract's English
+    // dictionaries corrupt more text than they repair.
+    private static final boolean DEFAULT_LITERAL_TEXT = true;
 
     // Properties
     private static StringProperty languageProperty;
@@ -42,6 +45,7 @@ public class OCRPreferences {
     private static StringProperty metadataPrefixProperty;
     private static StringProperty labelImageKeywordsProperty;
     private static BooleanProperty autoRunOnEntrySwitchProperty;
+    private static BooleanProperty literalTextProperty;
 
     // Window size properties for remembering dialog sizes
     private static DoubleProperty dialogWidthProperty;
@@ -88,6 +92,9 @@ public class OCRPreferences {
 
         autoRunOnEntrySwitchProperty = PathPrefs.createPersistentPreference(
                 PREFIX + "autoRunOnEntrySwitch", DEFAULT_AUTO_RUN_ON_ENTRY_SWITCH);
+
+        literalTextProperty = PathPrefs.createPersistentPreference(
+                PREFIX + "literalText", DEFAULT_LITERAL_TEXT);
 
         // Dialog size properties
         dialogWidthProperty = PathPrefs.createPersistentPreference(
@@ -193,6 +200,29 @@ public class OCRPreferences {
         }
     }
 
+    /**
+     * Whether OCR should run without Tesseract's language dictionaries.
+     *
+     * <p>On by default. Slide labels are accession numbers, sample codes, dates and
+     * e-mail addresses, and the dictionaries bias Tesseract toward readings that look
+     * like English words -- which corrupts exactly that kind of text.</p>
+     *
+     * @return true if the dictionaries should be disabled
+     */
+    public static boolean isLiteralText() {
+        return literalTextProperty != null ? literalTextProperty.get() : DEFAULT_LITERAL_TEXT;
+    }
+
+    public static void setLiteralText(boolean literal) {
+        if (literalTextProperty != null) {
+            literalTextProperty.set(literal);
+        }
+    }
+
+    public static BooleanProperty literalTextProperty() {
+        return literalTextProperty;
+    }
+
     public static boolean isDetectOrientation() {
         return detectOrientationProperty != null ? detectOrientationProperty.get() : DEFAULT_DETECT_ORIENTATION;
     }
@@ -284,6 +314,7 @@ public class OCRPreferences {
         setPageSegMode(DEFAULT_PAGE_SEG_MODE);
         setMetadataPrefix(DEFAULT_METADATA_PREFIX);
         setLabelImageKeywords(DEFAULT_LABEL_IMAGE_KEYWORDS);
+        setLiteralText(DEFAULT_LITERAL_TEXT);
         logger.info("OCR preferences reset to defaults");
     }
 }

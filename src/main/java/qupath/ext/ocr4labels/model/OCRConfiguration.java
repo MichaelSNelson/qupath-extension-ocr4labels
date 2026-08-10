@@ -86,6 +86,7 @@ public class OCRConfiguration {
     // Inspired by zindy/qupath-extension-ocr - region-based OCR and character whitelist support
     private final Rectangle cropRegion;
     private final String characterWhitelist;
+    private final boolean literalText;
 
     private OCRConfiguration(Builder builder) {
         this.pageSegMode = builder.pageSegMode;
@@ -98,6 +99,7 @@ public class OCRConfiguration {
         this.detectOrientation = builder.detectOrientation;
         this.cropRegion = builder.cropRegion;
         this.characterWhitelist = builder.characterWhitelist;
+        this.literalText = builder.literalText;
     }
 
     /**
@@ -128,7 +130,8 @@ public class OCRConfiguration {
                 .enhanceContrast(enhanceContrast)
                 .detectOrientation(detectOrientation)
                 .cropRegion(cropRegion)
-                .characterWhitelist(characterWhitelist);
+                .characterWhitelist(characterWhitelist)
+                .literalText(literalText);
     }
 
     public PageSegMode getPageSegMode() {
@@ -201,6 +204,23 @@ public class OCRConfiguration {
         return characterWhitelist != null && !characterWhitelist.isEmpty();
     }
 
+    /**
+     * Checks whether literal (dictionary-free) transcription is enabled.
+     *
+     * <p>Tesseract's LSTM decoder is a beam search that scores candidate character
+     * paths against the language's dictionaries, so it prefers readings that look
+     * like real words. Slide labels are mostly accession numbers, sample codes,
+     * dates and e-mail addresses, none of which are dictionary words, so that bias
+     * corrupts more text than it repairs. When this is enabled the word, frequent-word
+     * and punctuation dictionaries are all switched off and Tesseract reports what the
+     * character classifier actually saw.</p>
+     *
+     * @return true if the language dictionaries should be disabled
+     */
+    public boolean isLiteralText() {
+        return literalText;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
@@ -214,6 +234,7 @@ public class OCRConfiguration {
                pageSegMode == that.pageSegMode &&
                engineMode == that.engineMode &&
                Objects.equals(language, that.language) &&
+               literalText == that.literalText &&
                Objects.equals(cropRegion, that.cropRegion) &&
                Objects.equals(characterWhitelist, that.characterWhitelist);
     }
@@ -222,16 +243,17 @@ public class OCRConfiguration {
     public int hashCode() {
         return Objects.hash(pageSegMode, engineMode, language, minConfidence,
                 enablePreprocessing, autoRotate, enhanceContrast, detectOrientation,
-                cropRegion, characterWhitelist);
+                cropRegion, characterWhitelist, literalText);
     }
 
     @Override
     public String toString() {
         StringBuilder sb = new StringBuilder();
         sb.append(String.format("OCRConfiguration[psm=%s, oem=%s, lang=%s, minConf=%.0f%%, " +
-                        "preprocess=%b, autoRotate=%b, contrast=%b, detectOrient=%b",
+                        "preprocess=%b, autoRotate=%b, contrast=%b, detectOrient=%b, literal=%b",
                 pageSegMode, engineMode, language, minConfidence * 100,
-                enablePreprocessing, autoRotate, enhanceContrast, detectOrientation));
+                enablePreprocessing, autoRotate, enhanceContrast, detectOrientation,
+                literalText));
         if (cropRegion != null) {
             sb.append(String.format(", region=(%d,%d,%d,%d)",
                     cropRegion.x, cropRegion.y, cropRegion.width, cropRegion.height));
@@ -258,6 +280,9 @@ public class OCRConfiguration {
         // Inspired by zindy/qupath-extension-ocr - region-based OCR and character whitelist support
         private Rectangle cropRegion = null;
         private String characterWhitelist = null;
+        // Defaults on: slide labels carry codes and identifiers, not prose, so the
+        // dictionary bias corrupts more text than it repairs. See isLiteralText().
+        private boolean literalText = true;
 
         public Builder pageSegMode(PageSegMode mode) {
             this.pageSegMode = mode != null ? mode : PageSegMode.AUTO;
@@ -337,6 +362,22 @@ public class OCRConfiguration {
          */
         public Builder characterWhitelist(String whitelist) {
             this.characterWhitelist = whitelist;
+            return this;
+        }
+
+        /**
+         * Enables or disables literal (dictionary-free) transcription.
+         *
+         * <p>Defaults to true. Turn it off only when the labels carry ordinary
+         * words -- handwritten tissue names or staining notes -- where the
+         * language model repairs more than it breaks.</p>
+         *
+         * @param literal true to disable Tesseract's dictionaries
+         * @return this builder
+         * @see OCRConfiguration#isLiteralText()
+         */
+        public Builder literalText(boolean literal) {
+            this.literalText = literal;
             return this;
         }
 

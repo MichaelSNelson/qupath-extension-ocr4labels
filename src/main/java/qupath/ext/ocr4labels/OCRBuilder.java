@@ -67,6 +67,7 @@ public class OCRBuilder {
     // See: https://github.com/zindy/qupath-extension-ocr
     private Rectangle cropRegion = null;
     private String characterWhitelist = null;
+    private boolean literalText = true;
 
     /**
      * Creates a new builder with default settings.
@@ -174,6 +175,33 @@ public class OCRBuilder {
      */
     public OCRBuilder noEnhance() {
         this.enhanceContrast = false;
+        return this;
+    }
+
+    /**
+     * Transcribe literally, without Tesseract's language dictionaries (default: enabled).
+     *
+     * <p>Keeps OCR from "correcting" sample codes, accession numbers and e-mail
+     * addresses into things that look more like English words.</p>
+     *
+     * @return this builder
+     * @see qupath.ext.ocr4labels.model.OCRConfiguration#isLiteralText()
+     */
+    public OCRBuilder literal() {
+        this.literalText = true;
+        return this;
+    }
+
+    /**
+     * Use Tesseract's language dictionaries to correct recognised text.
+     *
+     * <p>Worth enabling only when the labels carry ordinary words, such as
+     * handwritten tissue names or staining notes.</p>
+     *
+     * @return this builder
+     */
+    public OCRBuilder useDictionary() {
+        this.literalText = false;
         return this;
     }
 
@@ -347,6 +375,7 @@ public class OCRBuilder {
                 .enablePreprocessing(true)
                 .cropRegion(cropRegion)
                 .characterWhitelist(characterWhitelist)
+                .literalText(literalText)
                 .build();
     }
 

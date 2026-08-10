@@ -72,6 +72,11 @@ public class OCRDialog {
     private static final ResourceBundle resources =
             ResourceBundle.getBundle("qupath.ext.ocr4labels.ui.strings");
 
+    // Scan scope options
+    private static final String SCOPE_FULL_IMAGE = "Full Image";
+    private static final String SCOPE_SELECTION = "Selection";
+    private static final String SCOPE_DRAWN_REGIONS = "Drawn Regions";
+
     private final QuPathGUI qupath;
     private final OCREngine ocrEngine;
     private final Project<?> project;
@@ -95,7 +100,6 @@ public class OCRDialog {
     private Button runOCRButton;
 
     private OCRResult currentResult;
-    private int selectedIndex = -1;
 
     // Toolbar controls for OCR settings
     private ComboBox<PSMOption> psmCombo;
@@ -144,6 +148,14 @@ public class OCRDialog {
     private final java.util.Deque<List<FieldSnapshot>> undoStack = new java.util.ArrayDeque<>();
     private final java.util.Deque<List<FieldSnapshot>> redoStack = new java.util.ArrayDeque<>();
     private boolean isUndoRedoOperation = false;
+    // Mirror the stacks as observable state so the Undo/Redo buttons can bind to them
+    private final javafx.beans.property.BooleanProperty undoAvailable =
+            new javafx.beans.property.SimpleBooleanProperty(false);
+    private final javafx.beans.property.BooleanProperty redoAvailable =
+            new javafx.beans.property.SimpleBooleanProperty(false);
+
+    // Set by "Add Field": the row waiting for the next drawn rectangle to be assigned to it
+    private OCRFieldEntry pendingRegionAssignment = null;
 
     /**
      * Shows the OCR dialog for processing project entries.
@@ -223,6 +235,12 @@ public class OCRDialog {
 
         // Add keyboard shortcuts for undo/redo
         scene.setOnKeyPressed(e -> {
+            // Escape leaves "draw a region for this row" mode without assigning one
+            if (e.getCode() == KeyCode.ESCAPE && pendingRegionAssignment != null) {
+                cancelPendingRegionAssignment();
+                e.consume();
+                return;
+            }
             if (e.isControlDown() || e.isMetaDown()) {
                 switch (e.getCode()) {
                     case Z:
@@ -292,12 +310,15 @@ public class OCRDialog {
         scanButton.setTooltip(new Tooltip(
                 "Scan the label image to extract content.\n\n" +
                 "What gets scanned depends on Scope:\n" +
-                "  Full Image: Scans the entire label\n" +
-                "  Selection: Scans only the drawn rectangle\n\n" +
+                "  Full Image: Scans the entire label, replacing the field list\n" +
+                "  Selection: Scans only the drawn rectangle, replacing the field list\n" +
+                "  Drawn Regions: Re-reads the regions already in the list, in place\n\n" +
                 "How content is decoded depends on Decode As:\n" +
                 "  Try Both: Looks for barcodes first, then OCR\n" +
                 "  Text: Uses OCR only\n" +
-                "  Barcode: Looks for barcodes only"));
+                "  Barcode: Looks for barcodes only\n\n" +
+                "In 'Drawn Regions' each row is decoded by its own Decode As value,\n" +
+                "not the toolbar one."));
 
         progressIndicator = new ProgressIndicator();
         progressIndicator.setMaxSize(24, 24);
@@ -307,13 +328,18 @@ public class OCRDialog {
         Label scopeLabel = new Label("Scope:");
         scopeLabel.setTooltip(new Tooltip("Choose what area of the label image to scan"));
         scopeCombo = new ComboBox<>();
-        scopeCombo.getItems().addAll("Full Image", "Selection");
-        scopeCombo.setValue("Full Image");
+        scopeCombo.getItems().addAll(SCOPE_FULL_IMAGE, SCOPE_SELECTION, SCOPE_DRAWN_REGIONS);
+        scopeCombo.setValue(SCOPE_FULL_IMAGE);
         scopeCombo.setTooltip(new Tooltip(
                 "What area to scan:\n\n" +
-                "Full Image: Process the entire label\n" +
-                "Selection: Process only the selected region\n" +
-                "           (draw a rectangle first)"));
+                "Full Image: Process the entire label. Clears the field list first.\n" +
+                "Selection: Process only the drawn rectangle. Clears the field list first.\n" +
+                "Drawn Regions: Re-read every region already in the field list.\n" +
+                "               Nothing is cleared - each row keeps its position and\n" +
+                "               metadata key, and its text and confidence are refreshed.\n" +
+                "               Use this after adding regions, or after changing Invert,\n" +
+                "               Enhance or Mode, to refresh the whole list at once.\n" +
+                "               Rows with no region are left untouched."));
         scopeCombo.valueProperty().addListener((obs, old, newVal) -> updateScanButtonState());
 
         // Type/Decode dropdown
@@ -334,10 +360,18 @@ public class OCRDialog {
 
         selectRegionButton = new ToggleButton("Draw Region");
         selectRegionButton.setTooltip(new Tooltip(
-                "Click to enable drawing mode, then drag on the\n" +
-                "image to select a specific area to scan.\n\n" +
-                "After drawing, set Scope to 'Selection' and click Scan."));
+                "Turn on drawing mode, then drag on the label image to mark an area.\n\n" +
+                "When you release the mouse a menu offers to scan the area straight\n" +
+                "away, or you can use 'Add Region' to keep it as an unread region.\n\n" +
+                "This button turns on by itself, highlighted in orange, after 'Add\n" +
+                "Field' - the next rectangle you draw is then assigned to that row\n" +
+                "instead of opening the menu. Press Escape to back out of that."));
         selectRegionButton.setOnAction(e -> {
+            // Toggling this off by hand abandons any row waiting for a region
+            if (pendingRegionAssignment != null && !selectRegionButton.isSelected()) {
+                cancelPendingRegionAssignment();
+                return;
+            }
             regionSelectionMode = selectRegionButton.isSelected();
             if (!regionSelectionMode) {
                 hasSelection = false;
@@ -345,7 +379,7 @@ public class OCRDialog {
             }
             // Auto-switch scope when entering selection mode
             if (regionSelectionMode) {
-                scopeCombo.setValue("Selection");
+                scopeCombo.setValue(SCOPE_SELECTION);
             }
             updateScanButtonState();
         });
@@ -353,21 +387,31 @@ public class OCRDialog {
         // Add Region button - creates a template field from the drawn selection without scanning
         Button addRegionBtn = new Button("Add Region");
         addRegionBtn.setTooltip(new Tooltip(
-                "Add the drawn rectangle as a template region without scanning.\n\n" +
-                "Use this to define areas on the label for template-based\n" +
-                "batch processing. The Decode As type determines how the\n" +
-                "region will be decoded when the template is applied.\n\n" +
-                "Workflow: Draw regions -> Add Region -> Save Template"));
+                "Add the rectangle you have drawn as a new row, without scanning it.\n\n" +
+                "This is the region-first counterpart of 'Add Field': draw the area,\n" +
+                "then get a row for it. 'Add Field' goes the other way - it makes the\n" +
+                "row first and then asks you to draw its area. Either way you end up\n" +
+                "with a row that has a position but no text yet.\n\n" +
+                "Read the regions with Scope 'Drawn Regions' -> Scan, or keep them\n" +
+                "unread and use Save Template for batch processing. The Decode As\n" +
+                "type set here determines how the region is decoded."));
         addRegionBtn.setDisable(true);
         addRegionBtn.setOnAction(e -> addRegionFromSelection());
 
         Button clearSelectionBtn = new Button("Clear");
-        clearSelectionBtn.setTooltip(new Tooltip("Clear the current selection"));
+        clearSelectionBtn.setTooltip(new Tooltip(
+                "Discard the rectangle currently being drawn.\n\n" +
+                "This only clears the drawing - it does not remove rows from the\n" +
+                "field list. Use Remove or Clear All underneath the table for that."));
         clearSelectionBtn.setOnAction(e -> {
+            if (pendingRegionAssignment != null) {
+                cancelPendingRegionAssignment();
+                return;
+            }
             hasSelection = false;
             selectRegionButton.setSelected(false);
             regionSelectionMode = false;
-            scopeCombo.setValue("Full Image");
+            scopeCombo.setValue(SCOPE_FULL_IMAGE);
             drawBoundingBoxes();
             updateScanButtonState();
         });
@@ -880,6 +924,11 @@ public class OCRDialog {
                     hasSelection = false;
                     drawBoundingBoxes();
                     updateScanButtonState();
+                } else if (pendingRegionAssignment != null) {
+                    // A row from "Add Field" is waiting for this rectangle - give it the
+                    // region instead of offering the usual scan menu.
+                    drawBoundingBoxes();
+                    assignDrawnRegionToPendingField();
                 } else {
                     // Valid selection - show context menu
                     drawBoundingBoxes();
@@ -915,12 +964,18 @@ public class OCRDialog {
         zoomControls.setAlignment(Pos.CENTER_LEFT);
 
         Button fitButton = new Button("Fit");
+        fitButton.setTooltip(new Tooltip(
+                "Scale the label image so the whole thing fits in the panel.\n\n"
+                + "Zoom only changes the preview - it does not affect scanning."));
         fitButton.setOnAction(e -> {
             fitImageToPane();
             Platform.runLater(this::drawBoundingBoxes);
         });
 
         Button actualButton = new Button("100%");
+        actualButton.setTooltip(new Tooltip(
+                "Show the label image at its true pixel size.\n\n"
+                + "Useful for judging whether small text is sharp enough to read."));
         actualButton.setOnAction(e -> {
             if (labelImage != null) {
                 imageView.setFitWidth(labelImage.getWidth());
@@ -1099,35 +1154,45 @@ public class OCRDialog {
         fieldsTable.getColumns().addAll(numCol, typeCol, textCol, keyCol, confCol);
         VBox.setVgrow(fieldsTable, Priority.ALWAYS);
 
-        // Handle selection
-        fieldsTable.getSelectionModel().selectedIndexProperty().addListener((obs, old, newVal) -> {
-            selectedIndex = newVal.intValue();
-            drawBoundingBoxes();
-        });
+        // Allow multiple rows to be selected, so Remove (and the overlay highlight)
+        // can act on a whole group at once. Ctrl+click adds, Shift+click extends.
+        fieldsTable.getSelectionModel().setSelectionMode(SelectionMode.MULTIPLE);
+
+        // Redraw so every selected row's box is highlighted
+        fieldsTable.getSelectionModel().getSelectedIndices().addListener(
+                (javafx.collections.ListChangeListener<Integer>) c -> drawBoundingBoxes());
 
         // Button bar for field actions
         HBox buttonBar = new HBox(10);
         buttonBar.setAlignment(Pos.CENTER_LEFT);
 
         Button addButton = new Button(resources.getString("button.addField"));
+        addButton.setTooltip(new Tooltip(
+                "Add one empty row, then start drawing so you can give it a region.\n\n" +
+                "The row is created immediately and 'Draw Region' switches on. Drag a\n" +
+                "rectangle on the label and it is assigned to that row, which is then\n" +
+                "decoded like any other region - Scan with Scope 'Drawn Regions' fills\n" +
+                "in its text, and Save Template stores its position.\n\n" +
+                "Press Escape while drawing to keep the row without a region. A row with\n" +
+                "no region is never scanned: type its value by hand and it still gets\n" +
+                "written to metadata on Apply."));
         addButton.setOnAction(e -> addManualField());
 
         Button removeButton = new Button("Remove");
-        removeButton.setTooltip(new Tooltip("Remove the selected field from the list"));
-        removeButton.setOnAction(e -> {
-            OCRFieldEntry selected = fieldsTable.getSelectionModel().getSelectedItem();
-            if (selected != null) {
-                saveStateForUndo();
-                fieldEntries.remove(selected);
-                updateMetadataPreview();
-                drawBoundingBoxes();
-            }
-        });
+        removeButton.setTooltip(new Tooltip(
+                "Remove the selected rows from the list.\n\n" +
+                "Select several at once with Ctrl+click or Shift+click.\n" +
+                "Undo (Ctrl+Z) brings them back."));
+        removeButton.setOnAction(e -> removeSelectedFields());
         // Disable when nothing is selected
         removeButton.disableProperty().bind(
-                fieldsTable.getSelectionModel().selectedItemProperty().isNull());
+                javafx.beans.binding.Bindings.isEmpty(
+                        fieldsTable.getSelectionModel().getSelectedItems()));
 
         Button clearButton = new Button(resources.getString("button.clearAll"));
+        clearButton.setTooltip(new Tooltip(
+                "Remove every row from the list, selected or not.\n" +
+                "Undo (Ctrl+Z) brings them back."));
         clearButton.setOnAction(e -> {
             if (!fieldEntries.isEmpty()) {
                 saveStateForUndo();
@@ -1137,7 +1202,22 @@ public class OCRDialog {
             }
         });
 
-        buttonBar.getChildren().addAll(addButton, removeButton, clearButton);
+        Button undoButton = new Button("Undo");
+        undoButton.setTooltip(new Tooltip(
+                "Undo the last change to the field list (Ctrl+Z).\n\n" +
+                "Covers removals, edits to text and metadata keys, added regions\n" +
+                "and scans. History is cleared when you switch images."));
+        undoButton.setOnAction(e -> undo());
+        undoButton.disableProperty().bind(undoAvailable.not());
+
+        Button redoButton = new Button("Redo");
+        redoButton.setTooltip(new Tooltip("Redo the last undone change (Ctrl+Y or Ctrl+Shift+Z)."));
+        redoButton.setOnAction(e -> redo());
+        redoButton.disableProperty().bind(redoAvailable.not());
+
+        buttonBar.getChildren().addAll(addButton, removeButton, clearButton,
+                new Separator(javafx.geometry.Orientation.VERTICAL),
+                undoButton, redoButton);
 
         // Text filter toolbar
         HBox filterBar = createFilterBar();
@@ -1416,7 +1496,7 @@ public class OCRDialog {
 
         if (fieldEntries.isEmpty()) {
             Dialogs.showWarningNotification("No Fields",
-                    "Run OCR first to detect text fields.");
+                    "Scan the label first to detect text fields.");
             return;
         }
 
@@ -1497,10 +1577,17 @@ public class OCRDialog {
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
         Button applyButton = new Button(resources.getString("button.apply"));
+        applyButton.setTooltip(new Tooltip(
+                "Write every field in the table to the selected image's metadata.\n\n"
+                + "Each row becomes one metadata entry: the Metadata Key is the name\n"
+                + "and the Detected Text is the value. Rows with an empty key are skipped."));
         applyButton.setDefaultButton(true);
         applyButton.setOnAction(e -> applyMetadata());
 
         Button cancelButton = new Button(resources.getString("button.cancel"));
+        cancelButton.setTooltip(new Tooltip(
+                "Close the dialog without writing any metadata.\n\n"
+                + "You are prompted first if there are unsaved fields."));
         cancelButton.setCancelButton(true);
         cancelButton.setOnAction(e -> stage.close());
 
@@ -1512,13 +1599,23 @@ public class OCRDialog {
      * Updates the scan button state based on current scope and selection.
      */
     private void updateScanButtonState() {
-        boolean selectionScope = "Selection".equals(scopeCombo.getValue());
-        boolean canScan = labelImage != null && (!selectionScope || hasSelection);
+        String scope = scopeCombo.getValue();
+        boolean selectionScope = SCOPE_SELECTION.equals(scope);
+        boolean regionsScope = SCOPE_DRAWN_REGIONS.equals(scope);
+        boolean hasRegions = countFieldsWithRegions() > 0;
+
+        boolean canScan = labelImage != null
+                && (!selectionScope || hasSelection)
+                && (!regionsScope || hasRegions);
         scanButton.setDisable(!canScan);
 
         // Update button text to hint at action
         if (selectionScope && !hasSelection) {
             scanButton.setText("Scan (draw region first)");
+        } else if (regionsScope && !hasRegions) {
+            scanButton.setText("Scan (no regions yet)");
+        } else if (regionsScope) {
+            scanButton.setText("Rescan Regions");
         } else {
             scanButton.setText("Scan");
         }
@@ -1541,6 +1638,15 @@ public class OCRDialog {
             return;
         }
 
+        String scope = scopeCombo.getValue();
+        RegionType decodeType = regionTypeCombo.getValue();
+
+        // "Drawn Regions" refreshes the existing list in place, so it must NOT clear it
+        if (SCOPE_DRAWN_REGIONS.equals(scope)) {
+            rescanDrawnRegions();
+            return;
+        }
+
         // Clear previous results before each scan so results don't accumulate
         if (!fieldEntries.isEmpty()) {
             saveStateForUndo();
@@ -1549,10 +1655,7 @@ public class OCRDialog {
             drawBoundingBoxes();
         }
 
-        String scope = scopeCombo.getValue();
-        RegionType decodeType = regionTypeCombo.getValue();
-
-        if ("Selection".equals(scope)) {
+        if (SCOPE_SELECTION.equals(scope)) {
             if (!hasSelection) {
                 Dialogs.showWarningNotification("No Selection",
                         "Please draw a rectangle on the image first,\nor change Scope to 'Full Image'.");
@@ -1572,6 +1675,245 @@ public class OCRDialog {
                 // Text-only scan (traditional OCR)
                 runOCR();
             }
+        }
+    }
+
+    /**
+     * Counts field entries that have a region attached and can therefore be rescanned.
+     */
+    private int countFieldsWithRegions() {
+        int count = 0;
+        for (OCRFieldEntry entry : fieldEntries) {
+            if (entry.getBoundingBox() != null) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * Re-decodes every field that has a region, refreshing the whole list in one pass.
+     *
+     * <p>This is the "refresh" path: after drawing a few new regions, or after changing
+     * Invert / Enhance / Mode, it re-reads all of them so the table is consistent again.
+     * Row order, metadata keys and box positions are preserved; only text, confidence
+     * and the detected type are updated. Each row is decoded by its own Decode As value
+     * rather than the toolbar's, so a mixed text/barcode list refreshes correctly.
+     * Rows with no region are left exactly as they are.</p>
+     */
+    private void rescanDrawnRegions() {
+        if (labelImage == null) {
+            Dialogs.showWarningNotification("No Label Image",
+                    "Please select an image with a label first.");
+            return;
+        }
+
+        if (countFieldsWithRegions() == 0) {
+            Dialogs.showWarningNotification("No Regions",
+                    "No field has a region to rescan.\n\n"
+                    + "Draw a rectangle and click 'Add Region', or scan with Scope\n"
+                    + "'Full Image' first, then use 'Drawn Regions' to refresh.");
+            return;
+        }
+
+        saveStateForUndo();
+        progressIndicator.setVisible(true);
+
+        PSMOption selectedPSM = psmCombo.getValue();
+        boolean invert = invertCheckBox.isSelected();
+
+        // Regions saved from a detection hug the content, and ZXing needs a quiet zone
+        // around a barcode to decode it, so barcode regions get padded outward.
+        OCRConfiguration config = OCRConfiguration.builder()
+                .pageSegMode(selectedPSM != null ? selectedPSM.getMode()
+                        : OCRConfiguration.PageSegMode.SINGLE_BLOCK)
+                .language(OCRPreferences.getLanguage())
+                .minConfidence(0.1) // Low threshold: the region is already known to hold content
+                .autoRotate(OCRPreferences.isAutoRotate())
+                .detectOrientation(OCRPreferences.isDetectOrientation())
+                .enhanceContrast(thresholdCheckBox.isSelected())
+                .enablePreprocessing(true)
+                .literalText(OCRPreferences.isLiteralText())
+                .build();
+
+        // Crop every region on the FX thread before handing off to the background thread
+        List<RescanTask> tasks = new ArrayList<>();
+        for (int i = 0; i < fieldEntries.size(); i++) {
+            OCRFieldEntry entry = fieldEntries.get(i);
+            BoundingBox bbox = entry.getBoundingBox();
+            if (bbox == null) {
+                continue;
+            }
+
+            RegionType type = entry.getRegionType();
+            double dilation = (type == RegionType.BARCODE || type == RegionType.AUTO) ? 0.25 : 0.0;
+            int[] box = dilateAndClamp(bbox, dilation);
+            if (box == null) {
+                logger.warn("Skipping rescan of field '{}': region is outside the image",
+                        entry.getMetadataKey());
+                continue;
+            }
+
+            BufferedImage regionImage;
+            try {
+                regionImage = labelImage.getSubimage(box[0], box[1], box[2], box[3]);
+            } catch (Exception e) {
+                logger.warn("Failed to crop region for field '{}': {}",
+                        entry.getMetadataKey(), e.getMessage());
+                continue;
+            }
+
+            if (invert) {
+                regionImage = invertImage(regionImage);
+            }
+
+            tasks.add(new RescanTask(i, regionImage, entry.getMetadataKey(), box, type, bbox));
+        }
+
+        if (tasks.isEmpty()) {
+            progressIndicator.setVisible(false);
+            Dialogs.showWarningNotification("Nothing to Rescan",
+                    "None of the regions could be read from the current label image.");
+            return;
+        }
+
+        final int taskCount = tasks.size();
+
+        // Decode SEQUENTIALLY on one background thread - Tesseract is not thread-safe
+        // and concurrent calls crash the JVM.
+        java.util.concurrent.CompletableFuture.runAsync(() -> {
+            Map<Integer, OCRFieldEntry> updates = new HashMap<>();
+            int failed = 0;
+
+            for (RescanTask task : tasks) {
+                try {
+                    java.awt.Rectangle region =
+                            new java.awt.Rectangle(0, 0, task.box[2], task.box[3]);
+
+                    UnifiedDecoderService.DecodedResult result =
+                            OCRController.getInstance().decodeRegion(
+                                    task.regionImage, region, task.regionType, config);
+
+                    // decodeRegion always returns a result; a failed decode comes back
+                    // as DecodedResult.error(...) rather than null.
+                    if (!result.hasText()) {
+                        // Keep the row, but make it visible that this region now reads as empty
+                        logger.info("Rescan found no content in region for field '{}'",
+                                task.metadataKey);
+                    }
+
+                    String text = result.getText() != null ? result.getText() : "";
+                    RegionType resolvedType = result.getSourceType() != null
+                            ? result.getSourceType()
+                            : task.regionType;
+
+                    // Replaced rather than mutated: text, confidence and the unfiltered
+                    // original all change together, and the original is what text filters
+                    // and vocabulary matching are re-applied from.
+                    OCRFieldEntry updated = new OCRFieldEntry(
+                            text, task.metadataKey, result.getConfidence(),
+                            task.originalBox, resolvedType);
+                    if (result.getSourceType() == RegionType.BARCODE
+                            && result.getFormat() != null) {
+                        updated.setBarcodeFormat(result.getFormat());
+                    }
+                    updates.put(task.index, updated);
+
+                } catch (Exception e) {
+                    failed++;
+                    logger.warn("Failed to rescan field '{}': {}", task.metadataKey, e.getMessage());
+                }
+            }
+
+            final int failedCount = failed;
+            Platform.runLater(() -> {
+                int emptyCount = 0;
+                for (Map.Entry<Integer, OCRFieldEntry> update : updates.entrySet()) {
+                    OCRFieldEntry updated = update.getValue();
+                    // Re-apply the active text filters, as a fresh scan would
+                    if (updated.getRegionType() == RegionType.TEXT) {
+                        updated.setText(applyActiveFilters(updated.getOriginalText()));
+                    }
+                    if (updated.getText() == null || updated.getText().isEmpty()) {
+                        emptyCount++;
+                    }
+                    fieldEntries.set(update.getKey(), updated);
+                }
+
+                fieldsTable.refresh();
+                updateMetadataPreview();
+                drawBoundingBoxes();
+                updateScanButtonState();
+                markDirty();
+                progressIndicator.setVisible(false);
+
+                StringBuilder message = new StringBuilder(
+                        String.format("Refreshed %d of %d region(s)", updates.size(), taskCount));
+                if (emptyCount > 0) {
+                    message.append(String.format("; %d now read as empty", emptyCount));
+                }
+                if (failedCount > 0) {
+                    message.append(String.format("; %d failed", failedCount));
+                }
+                Dialogs.showInfoNotification("Rescan Complete", message.toString());
+                logger.info("Rescan complete: {}", message);
+            });
+        }).exceptionally(ex -> {
+            Platform.runLater(() -> {
+                progressIndicator.setVisible(false);
+                logger.error("Rescan of drawn regions failed", ex);
+                Dialogs.showErrorMessage("Rescan Failed",
+                        "Error rescanning regions: " + ex.getMessage());
+            });
+            return null;
+        });
+    }
+
+    /**
+     * Expands a bounding box by the given fraction of its size and clamps it to the
+     * label image, so a tight box still gives the decoder some margin to work with.
+     *
+     * @param bbox     the region to expand
+     * @param dilation fraction to grow by on each side (0.25 = 25% larger)
+     * @return {x, y, width, height} in image pixels, or null if nothing usable remains
+     */
+    private int[] dilateAndClamp(BoundingBox bbox, double dilation) {
+        int padX = (int) Math.round(bbox.getWidth() * dilation / 2.0);
+        int padY = (int) Math.round(bbox.getHeight() * dilation / 2.0);
+
+        int x = Math.max(0, bbox.getX() - padX);
+        int y = Math.max(0, bbox.getY() - padY);
+        int maxX = Math.min(labelImage.getWidth(), bbox.getX() + bbox.getWidth() + padX);
+        int maxY = Math.min(labelImage.getHeight(), bbox.getY() + bbox.getHeight() + padY);
+
+        int w = maxX - x;
+        int h = maxY - y;
+        if (w < 5 || h < 5) {
+            return null;
+        }
+        return new int[]{x, y, w, h};
+    }
+
+    /**
+     * Holds a pre-cropped region to be re-decoded on a background thread, along with
+     * the list position and original box it must be written back to.
+     */
+    private static class RescanTask {
+        final int index;
+        final BufferedImage regionImage;
+        final String metadataKey;
+        final int[] box;
+        final RegionType regionType;
+        final BoundingBox originalBox;
+
+        RescanTask(int index, BufferedImage regionImage, String metadataKey,
+                   int[] box, RegionType regionType, BoundingBox originalBox) {
+            this.index = index;
+            this.regionImage = regionImage;
+            this.metadataKey = metadataKey;
+            this.box = box;
+            this.regionType = regionType;
+            this.originalBox = originalBox;
         }
     }
 
@@ -1623,6 +1965,7 @@ public class OCRDialog {
                 .detectOrientation(OCRPreferences.isDetectOrientation())
                 .enhanceContrast(thresholdCheckBox.isSelected())
                 .enablePreprocessing(true)
+                .literalText(OCRPreferences.isLiteralText())
                 .build();
 
         BufferedImage imageToProcess = preprocessForOCR(labelImage);
@@ -1742,6 +2085,7 @@ public class OCRDialog {
                 .detectOrientation(OCRPreferences.isDetectOrientation())
                 .enhanceContrast(thresholdCheckBox.isSelected())
                 .enablePreprocessing(true)
+                .literalText(OCRPreferences.isLiteralText())
                 .build();
 
         BufferedImage imageToProcess = preprocessForOCR(labelImage);
@@ -1930,8 +2274,15 @@ public class OCRDialog {
         double scaleY = imageView.getBoundsInLocal().getHeight() / labelImage.getHeight();
         double scale = Math.min(scaleX, scaleY);
 
-        int index = 0;
-        for (OCRFieldEntry entry : fieldEntries) {
+        // Highlight every selected row's box, not just one
+        java.util.Set<Integer> selectedRows =
+                new java.util.HashSet<>(fieldsTable.getSelectionModel().getSelectedIndices());
+
+        // Numbering must follow the row's position in the table, NOT a running count of
+        // boxes drawn: rows without a region are skipped here but still occupy a row
+        // number, and the overlay labels have to match the table's "#" column.
+        for (int index = 0; index < fieldEntries.size(); index++) {
+            OCRFieldEntry entry = fieldEntries.get(index);
             BoundingBox bbox = entry.getBoundingBox();
             if (bbox == null) continue;
 
@@ -1943,7 +2294,7 @@ public class OCRDialog {
             // Determine color based on region type
             Color strokeColor;
             String typeLabel;
-            if (index == selectedIndex) {
+            if (selectedRows.contains(index)) {
                 strokeColor = Color.YELLOW;
                 gc.setLineWidth(3);
             } else {
@@ -1971,8 +2322,6 @@ public class OCRDialog {
             gc.fillRect(x, y - 16, Math.min(w, 60), 16);
             gc.setFill(Color.WHITE);
             gc.fillText(String.format("%d[%s]", index + 1, typeLabel), x + 3, y - 3);
-
-            index++;
         }
     }
 
@@ -2081,6 +2430,7 @@ public class OCRDialog {
                     .detectOrientation(OCRPreferences.isDetectOrientation())
                     .enhanceContrast(thresholdCheckBox.isSelected())
                     .enablePreprocessing(true)
+                    .literalText(OCRPreferences.isLiteralText())
                     .build();
 
             java.awt.Rectangle region = new java.awt.Rectangle(0, 0, imgW, imgH);
@@ -2124,6 +2474,7 @@ public class OCRDialog {
                     .detectOrientation(OCRPreferences.isDetectOrientation())
                     .enhanceContrast(thresholdCheckBox.isSelected())
                     .enablePreprocessing(true)
+                    .literalText(OCRPreferences.isLiteralText())
                     .build();
 
             OCRController.getInstance().performOCRAsync(finalRegionImage, config)
@@ -2163,7 +2514,7 @@ public class OCRDialog {
         selectRegionButton.setSelected(false);
         regionSelectionMode = false;
         hasSelection = false;
-        scopeCombo.setValue("Full Image");
+        scopeCombo.setValue(SCOPE_FULL_IMAGE);
         drawBoundingBoxes();
         updateScanButtonState();
     }
@@ -2178,21 +2529,21 @@ public class OCRDialog {
         MenuItem scanAutoItem = new MenuItem("Scan (Try Both)");
         scanAutoItem.setOnAction(e -> {
             regionTypeCombo.setValue(RegionType.AUTO);
-            scopeCombo.setValue("Selection");
+            scopeCombo.setValue(SCOPE_SELECTION);
             scanSelectedRegion();
         });
 
         MenuItem scanTextItem = new MenuItem("Scan as Text");
         scanTextItem.setOnAction(e -> {
             regionTypeCombo.setValue(RegionType.TEXT);
-            scopeCombo.setValue("Selection");
+            scopeCombo.setValue(SCOPE_SELECTION);
             scanSelectedRegion();
         });
 
         MenuItem scanBarcodeItem = new MenuItem("Scan as Barcode");
         scanBarcodeItem.setOnAction(e -> {
             regionTypeCombo.setValue(RegionType.BARCODE);
-            scopeCombo.setValue("Selection");
+            scopeCombo.setValue(SCOPE_SELECTION);
             scanSelectedRegion();
         });
 
@@ -2201,7 +2552,7 @@ public class OCRDialog {
         MenuItem keepSelectionItem = new MenuItem("Keep Selection");
         keepSelectionItem.setOnAction(e -> {
             // Just close the menu, keep the selection for manual scanning
-            scopeCombo.setValue("Selection");
+            scopeCombo.setValue(SCOPE_SELECTION);
         });
 
         MenuItem cancelItem = new MenuItem("Clear Selection");
@@ -2209,7 +2560,7 @@ public class OCRDialog {
             hasSelection = false;
             selectRegionButton.setSelected(false);
             regionSelectionMode = false;
-            scopeCombo.setValue("Full Image");
+            scopeCombo.setValue(SCOPE_FULL_IMAGE);
             drawBoundingBoxes();
             updateScanButtonState();
         });
@@ -2266,7 +2617,7 @@ public class OCRDialog {
                                     "Tips:\n" +
                                     "- Ensure the barcode is clearly visible\n" +
                                     "- Try toggling the Invert checkbox\n" +
-                                    "- Use 'Select Region' to manually select the barcode area");
+                                    "- Use 'Draw Region' to manually mark the barcode area");
                         }
                     } else {
                         addAutoDetectedBarcodes(result);
@@ -2307,7 +2658,7 @@ public class OCRDialog {
                                 "Tips:\n" +
                                 "- Ensure the barcode is clearly visible\n" +
                                 "- The barcode may be damaged or low quality\n" +
-                                "- Use 'Select Region' to manually select the barcode area");
+                                "- Use 'Draw Region' to manually mark the barcode area");
                     } else {
                         addAutoDetectedBarcodes(result);
 
@@ -2597,14 +2948,169 @@ public class OCRDialog {
         }
     }
 
+    /**
+     * Removes every selected row. Copies the selection first, because removing from
+     * the backing list mutates the selection while it is being iterated.
+     */
+    private void removeSelectedFields() {
+        List<OCRFieldEntry> selected =
+                new ArrayList<>(fieldsTable.getSelectionModel().getSelectedItems());
+        if (selected.isEmpty()) {
+            return;
+        }
+
+        saveStateForUndo();
+        // A pending region assignment for a row being deleted no longer has a target
+        if (pendingRegionAssignment != null && selected.contains(pendingRegionAssignment)) {
+            cancelPendingRegionAssignment();
+        }
+        fieldsTable.getSelectionModel().clearSelection();
+        fieldEntries.removeAll(selected);
+        updateMetadataPreview();
+        drawBoundingBoxes();
+        logger.info("Removed {} field(s)", selected.size());
+    }
+
+    /**
+     * Adds an empty row and immediately arms region drawing for it, so the next
+     * rectangle the user drags on the label becomes that row's region.
+     */
     private void addManualField() {
         saveStateForUndo();
         String prefix = OCRPreferences.getMetadataPrefix();
         String key = prefix + "field_" + fieldEntries.size();
         OCRFieldEntry entry = new OCRFieldEntry("", key, 1.0f, null);
         fieldEntries.add(entry);
+        fieldsTable.getSelectionModel().clearSelection();
         fieldsTable.getSelectionModel().select(entry);
+        fieldsTable.scrollTo(entry);
         updateMetadataPreview();
+
+        if (labelImage != null) {
+            armRegionAssignment(entry);
+        } else {
+            // No label to draw on - the row is still usable as a hand-typed metadata field
+            logger.info("Added field '{}' with no label image loaded; region drawing not armed", key);
+        }
+    }
+
+    /**
+     * Puts the dialog into "draw a region for this row" mode: turns on drawing,
+     * highlights the Draw Region button, and remembers which row is waiting.
+     *
+     * @param entry the row the next drawn rectangle should be assigned to
+     */
+    private void armRegionAssignment(OCRFieldEntry entry) {
+        pendingRegionAssignment = entry;
+
+        hasSelection = false;
+        regionSelectionMode = true;
+        selectRegionButton.setSelected(true);
+        // Make it obvious that the dialog is waiting for a rectangle
+        selectRegionButton.setStyle("-fx-background-color: #f5a623; -fx-text-fill: white; "
+                + "-fx-font-weight: bold;");
+        selectRegionButton.setText("Draw Region for " + entry.getMetadataKey());
+
+        drawBoundingBoxes();
+        updateScanButtonState();
+        logger.info("Armed region assignment for field '{}'", entry.getMetadataKey());
+    }
+
+    /**
+     * Leaves "draw a region for this row" mode without assigning anything.
+     * The row stays in the list; it simply has no region.
+     */
+    private void cancelPendingRegionAssignment() {
+        if (pendingRegionAssignment == null) {
+            return;
+        }
+        logger.info("Cancelled region assignment for field '{}'",
+                pendingRegionAssignment.getMetadataKey());
+        pendingRegionAssignment = null;
+        selectRegionButton.setStyle("");
+        selectRegionButton.setText("Draw Region");
+        selectRegionButton.setSelected(false);
+        regionSelectionMode = false;
+        hasSelection = false;
+        scopeCombo.setValue(SCOPE_FULL_IMAGE);
+        drawBoundingBoxes();
+        updateScanButtonState();
+    }
+
+    /**
+     * Assigns the rectangle currently drawn on the label to the row that is waiting
+     * for one, then leaves assignment mode.
+     */
+    private void assignDrawnRegionToPendingField() {
+        OCRFieldEntry target = pendingRegionAssignment;
+        if (target == null || !hasSelection || labelImage == null) {
+            return;
+        }
+
+        int[] box = selectionToImageBounds();
+        if (box == null) {
+            Dialogs.showWarningNotification("Selection Too Small",
+                    "Please draw a larger rectangle for this field.");
+            return;
+        }
+
+        saveStateForUndo();
+        target.setBoundingBox(new BoundingBox(box[0], box[1], box[2], box[3]));
+        // A region-less row defaults to TEXT; adopt whatever Decode As is currently set to
+        RegionType type = regionTypeCombo.getValue();
+        if (type != null) {
+            target.setRegionType(type);
+        }
+
+        logger.info("Assigned region ({},{},{},{}) to field '{}'",
+                box[0], box[1], box[2], box[3], target.getMetadataKey());
+
+        pendingRegionAssignment = null;
+        selectRegionButton.setStyle("");
+        selectRegionButton.setText("Draw Region");
+        selectRegionButton.setSelected(false);
+        regionSelectionMode = false;
+        hasSelection = false;
+        scopeCombo.setValue(SCOPE_FULL_IMAGE);
+
+        fieldsTable.refresh();
+        fieldsTable.getSelectionModel().clearSelection();
+        fieldsTable.getSelectionModel().select(target);
+        updateMetadataPreview();
+        drawBoundingBoxes();
+        updateScanButtonState();
+
+        Dialogs.showInfoNotification("Region Assigned",
+                String.format("Region assigned to '%s'. Scan with Scope 'Drawn Regions' to read it.",
+                        target.getMetadataKey()));
+    }
+
+    /**
+     * Converts the drawn selection rectangle from canvas coordinates to label-image
+     * pixel coordinates.
+     *
+     * @return {x, y, width, height} in image pixels, or null if the selection is too small
+     */
+    private int[] selectionToImageBounds() {
+        if (!hasSelection || labelImage == null) {
+            return null;
+        }
+
+        double scaleX = imageView.getBoundsInLocal().getWidth() / labelImage.getWidth();
+        double scaleY = imageView.getBoundsInLocal().getHeight() / labelImage.getHeight();
+        double scale = Math.min(scaleX, scaleY);
+
+        int imgX = (int) Math.max(0, Math.min(selectionStartX, selectionEndX) / scale);
+        int imgY = (int) Math.max(0, Math.min(selectionStartY, selectionEndY) / scale);
+        int imgW = (int) Math.min(labelImage.getWidth() - imgX,
+                Math.abs(selectionEndX - selectionStartX) / scale);
+        int imgH = (int) Math.min(labelImage.getHeight() - imgY,
+                Math.abs(selectionEndY - selectionStartY) / scale);
+
+        if (imgW < 5 || imgH < 5) {
+            return null;
+        }
+        return new int[]{imgX, imgY, imgW, imgH};
     }
 
     /**
@@ -2655,7 +3161,7 @@ public class OCRDialog {
     private void saveTemplate() {
         if (fieldEntries.isEmpty()) {
             Dialogs.showWarningNotification("No Fields",
-                    "Run OCR first to detect fields before saving a template.");
+                    "Scan the label first to detect fields before saving a template.");
             return;
         }
 
@@ -2697,6 +3203,7 @@ public class OCRDialog {
                 .language(OCRPreferences.getLanguage())
                 .minConfidence(confSlider.getValue() / 100.0)
                 .enhanceContrast(thresholdCheckBox.isSelected())
+                .literalText(OCRPreferences.isLiteralText())
                 .build();
         template.setConfiguration(config);
 
@@ -2861,6 +3368,7 @@ public class OCRDialog {
                 .language(OCRPreferences.getLanguage())
                 .minConfidence(0.1) // Very low threshold for fixed positions
                 .enhanceContrast(enhance)
+                .literalText(OCRPreferences.isLiteralText())
                 .build();
 
         // Collect region extraction data on the FX thread before going async
@@ -3219,6 +3727,17 @@ public class OCRDialog {
 
         // Clear redo stack when new action is performed
         redoStack.clear();
+        updateUndoRedoState();
+    }
+
+    /**
+     * Mirrors the undo/redo stacks into observable properties so the buttons
+     * enable and disable themselves. ArrayDeque is not observable, so this has
+     * to be called whenever either stack changes.
+     */
+    private void updateUndoRedoState() {
+        undoAvailable.set(!undoStack.isEmpty());
+        redoAvailable.set(!redoStack.isEmpty());
     }
 
     /**
@@ -3247,8 +3766,10 @@ public class OCRDialog {
             fieldsTable.refresh();
             updateMetadataPreview();
             drawBoundingBoxes();
+            updateScanButtonState();
         } finally {
             isUndoRedoOperation = false;
+            updateUndoRedoState();
         }
     }
 
@@ -3278,8 +3799,10 @@ public class OCRDialog {
             fieldsTable.refresh();
             updateMetadataPreview();
             drawBoundingBoxes();
+            updateScanButtonState();
         } finally {
             isUndoRedoOperation = false;
+            updateUndoRedoState();
         }
     }
 
@@ -3289,6 +3812,7 @@ public class OCRDialog {
     private void clearUndoHistory() {
         undoStack.clear();
         redoStack.clear();
+        updateUndoRedoState();
     }
 
     // ========== Inner Classes ==========
@@ -3304,7 +3828,9 @@ public class OCRDialog {
         private final SimpleStringProperty metadataKey;
         private final ObjectProperty<RegionType> regionType;
         private final float confidence;
-        private final BoundingBox boundingBox;
+        // Not final: "Add Field" creates a row first and assigns its region afterwards,
+        // from the rectangle the user then draws on the label.
+        private BoundingBox boundingBox;
         private String barcodeFormat;  // For barcode regions: the detected format
 
         public OCRFieldEntry(String text, String metadataKey, float confidence, BoundingBox boundingBox) {
@@ -3340,6 +3866,8 @@ public class OCRDialog {
 
         public float getConfidence() { return confidence; }
         public BoundingBox getBoundingBox() { return boundingBox; }
+        public void setBoundingBox(BoundingBox value) { this.boundingBox = value; }
+        public boolean hasBoundingBox() { return boundingBox != null; }
 
         public String getBarcodeFormat() { return barcodeFormat; }
         public void setBarcodeFormat(String format) { this.barcodeFormat = format; }
@@ -3381,6 +3909,13 @@ public class OCRDialog {
         public RegionTypeCell() {
             comboBox = new ComboBox<>();
             comboBox.getItems().addAll(RegionType.values());
+            comboBox.setTooltip(new Tooltip(
+                    "How this row's region is decoded when it is rescanned.\n\n"
+                    + "Text: OCR (Tesseract)\n"
+                    + "Barcode: barcode scanner (ZXing)\n"
+                    + "Try Both: barcode first, then OCR\n\n"
+                    + "Also sets the box colour on the image: green for Text,\n"
+                    + "orange for Barcode, purple for Try Both."));
             comboBox.setOnAction(e -> {
                 OCRFieldEntry entry = getTableView().getItems().get(getIndex());
                 entry.setRegionType(comboBox.getValue());
