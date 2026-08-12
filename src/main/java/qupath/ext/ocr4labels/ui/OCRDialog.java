@@ -367,9 +367,14 @@ public class OCRDialog {
                 "Field' - the next rectangle you draw is then assigned to that row\n" +
                 "instead of opening the menu. Press Escape to back out of that."));
         selectRegionButton.setOnAction(e -> {
-            // Toggling this off by hand abandons any row waiting for a region
-            if (pendingRegionAssignment != null && !selectRegionButton.isSelected()) {
-                cancelPendingRegionAssignment();
+            // While a row is waiting for a region this button is already switched on, so
+            // clicking it reads as "yes, let me draw" - NOT as cancel. Treat it as a no-op
+            // and stay armed; deselecting here would silently drop the pending row, which
+            // is exactly what it used to do.
+            if (pendingRegionAssignment != null) {
+                selectRegionButton.setSelected(true);
+                regionSelectionMode = true;
+                updateScanButtonState();
                 return;
             }
             regionSelectionMode = selectRegionButton.isSelected();
@@ -1168,14 +1173,16 @@ public class OCRDialog {
 
         Button addButton = new Button(resources.getString("button.addField"));
         addButton.setTooltip(new Tooltip(
-                "Add one empty row, then start drawing so you can give it a region.\n\n" +
-                "The row is created immediately and 'Draw Region' switches on. Drag a\n" +
-                "rectangle on the label and it is assigned to that row, which is then\n" +
-                "decoded like any other region - Scan with Scope 'Drawn Regions' fills\n" +
-                "in its text, and Save Template stores its position.\n\n" +
-                "Press Escape while drawing to keep the row without a region. A row with\n" +
-                "no region is never scanned: type its value by hand and it still gets\n" +
-                "written to metadata on Apply."));
+                "Add one empty row, then drag on the label image to give it a region.\n\n" +
+                "The row is created immediately and drawing mode switches on by itself -\n" +
+                "an orange banner appears across the top of the image. Drag straight on\n" +
+                "the image; you do NOT need to click 'Draw Region' first, it is already on.\n\n" +
+                "The rectangle you drag is assigned to that row, which is then decoded like\n" +
+                "any other region - Scan with Scope 'Drawn Regions' fills in its text, and\n" +
+                "Save Template stores its position.\n\n" +
+                "Press Escape to keep the row without a region. A row with no region is\n" +
+                "never scanned: type its value by hand and it still gets written to\n" +
+                "metadata on Apply."));
         addButton.setOnAction(e -> addManualField());
 
         Button removeButton = new Button("Remove");
@@ -1717,6 +1724,22 @@ public class OCRDialog {
         }
 
         saveStateForUndo();
+        decodeRegions(null);
+    }
+
+    /**
+     * Decodes field regions and writes the results back into the table.
+     *
+     * <p>Shared by the "Drawn Regions" scan scope and by the single-field decode that
+     * runs as soon as a region is assigned from "Add Field", so both paths apply the
+     * same configuration, dilation and filter handling.</p>
+     *
+     * <p>The caller is responsible for calling {@link #saveStateForUndo()} first, so
+     * that the decode and whatever led to it collapse into one undo step.</p>
+     *
+     * @param only the single entry to decode, or null to decode every entry with a region
+     */
+    private void decodeRegions(OCRFieldEntry only) {
         progressIndicator.setVisible(true);
 
         PSMOption selectedPSM = psmCombo.getValue();
@@ -1740,6 +1763,9 @@ public class OCRDialog {
         List<RescanTask> tasks = new ArrayList<>();
         for (int i = 0; i < fieldEntries.size(); i++) {
             OCRFieldEntry entry = fieldEntries.get(i);
+            if (only != null && entry != only) {
+                continue;
+            }
             BoundingBox bbox = entry.getBoundingBox();
             if (bbox == null) {
                 continue;
@@ -1846,6 +1872,37 @@ public class OCRDialog {
                 updateScanButtonState();
                 markDirty();
                 progressIndicator.setVisible(false);
+
+                if (only != null) {
+                    // Single field, decoded right after its region was drawn. The decode
+                    // REPLACES the entry in the list, so `only` is now stale - report and
+                    // reselect the replacement, not the object we were handed.
+                    OCRFieldEntry replacement = updates.values().stream().findFirst().orElse(null);
+                    if (replacement == null) {
+                        Dialogs.showErrorMessage("Region Not Read",
+                                "The region was assigned but could not be decoded.");
+                        return;
+                    }
+
+                    fieldsTable.getSelectionModel().clearSelection();
+                    fieldsTable.getSelectionModel().select(replacement);
+                    fieldsTable.scrollTo(replacement);
+
+                    String text = replacement.getText();
+                    if (text == null || text.isEmpty()) {
+                        Dialogs.showInfoNotification("Region Assigned",
+                                String.format("Nothing could be read in the region for '%s'.%n"
+                                        + "Try a tighter rectangle, a different Decode As, or"
+                                        + " toggle Invert / Enhance and rescan.",
+                                        replacement.getMetadataKey()));
+                    } else {
+                        Dialogs.showInfoNotification("Region Assigned",
+                                String.format("'%s' = %s", replacement.getMetadataKey(), text));
+                    }
+                    logger.info("Decoded newly assigned region for '{}': '{}'",
+                            replacement.getMetadataKey(), text);
+                    return;
+                }
 
                 StringBuilder message = new StringBuilder(
                         String.format("Refreshed %d of %d region(s)", updates.size(), taskCount));
@@ -2266,6 +2323,9 @@ public class OCRDialog {
         if (hasSelection || regionSelectionMode) {
             drawSelectionRectangle(gc);
         }
+
+        // Drawn before the early return below, so the prompt shows even with an empty list
+        drawPendingAssignmentPrompt(gc);
 
         if (fieldEntries.isEmpty()) return;
 
@@ -3014,6 +3074,43 @@ public class OCRDialog {
         drawBoundingBoxes();
         updateScanButtonState();
         logger.info("Armed region assignment for field '{}'", entry.getMetadataKey());
+
+        // The row on its own looks inert - say plainly that the dialog is now waiting
+        // for a drag on the image, and where.
+        Dialogs.showInfoNotification("Draw the Region",
+                String.format("Drag a rectangle on the label image to set the region for '%s'.%n"
+                        + "Press Escape to leave this field without a region.",
+                        entry.getMetadataKey()));
+    }
+
+    /**
+     * Draws the "waiting for a rectangle" prompt across the top of the label image.
+     * Without this the armed state is only visible on the toolbar button, which is
+     * easy to miss when you are looking at the field table or the image.
+     */
+    private void drawPendingAssignmentPrompt(GraphicsContext gc) {
+        if (pendingRegionAssignment == null) {
+            return;
+        }
+
+        String message = "Drag a rectangle for '" + pendingRegionAssignment.getMetadataKey()
+                + "'   (Esc to skip)";
+
+        gc.setFont(javafx.scene.text.Font.font("System", javafx.scene.text.FontWeight.BOLD, 13));
+        double bannerHeight = 24;
+        double width = overlayCanvas.getWidth();
+
+        gc.setFill(Color.rgb(245, 166, 35, 0.92));
+        gc.fillRect(0, 0, width, bannerHeight);
+        gc.setStroke(Color.rgb(150, 100, 20));
+        gc.setLineWidth(1);
+        gc.strokeRect(0, 0, width, bannerHeight);
+
+        gc.setFill(Color.BLACK);
+        gc.fillText(message, 8, 17);
+
+        // Restore defaults so the box drawing below is unaffected
+        gc.setFont(javafx.scene.text.Font.getDefault());
     }
 
     /**
@@ -3024,8 +3121,8 @@ public class OCRDialog {
         if (pendingRegionAssignment == null) {
             return;
         }
-        logger.info("Cancelled region assignment for field '{}'",
-                pendingRegionAssignment.getMetadataKey());
+        String key = pendingRegionAssignment.getMetadataKey();
+        logger.info("Cancelled region assignment for field '{}'", key);
         pendingRegionAssignment = null;
         selectRegionButton.setStyle("");
         selectRegionButton.setText("Draw Region");
@@ -3035,6 +3132,10 @@ public class OCRDialog {
         scopeCombo.setValue(SCOPE_FULL_IMAGE);
         drawBoundingBoxes();
         updateScanButtonState();
+
+        Dialogs.showInfoNotification("No Region Assigned",
+                String.format("'%s' was left without a region. Type its value by hand, or"
+                        + " remove the row and click Add Field to try again.", key));
     }
 
     /**
@@ -3080,9 +3181,11 @@ public class OCRDialog {
         drawBoundingBoxes();
         updateScanButtonState();
 
-        Dialogs.showInfoNotification("Region Assigned",
-                String.format("Region assigned to '%s'. Scan with Scope 'Drawn Regions' to read it.",
-                        target.getMetadataKey()));
+        // Read it straight away. Drawing a region for a named field is a request for its
+        // value, so making the user then find Scope 'Drawn Regions' and press Scan just to
+        // see anything happen is a dead end. saveStateForUndo() above covers the assignment
+        // and this decode together, so one Ctrl+Z undoes the whole gesture.
+        decodeRegions(target);
     }
 
     /**

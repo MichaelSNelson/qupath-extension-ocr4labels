@@ -240,7 +240,7 @@ the wrong way.
 
 | Button | Description |
 |--------|-------------|
-| **Add Field** | Adds one empty row, then arms drawing so you can give it a region |
+| **Add Field** | Adds one empty row, arms drawing, then reads whatever you draw for it |
 | **Remove** | Deletes the selected rows |
 | **Clear All** | Removes every row |
 | **Undo** | Reverses the last change to the field list (Ctrl+Z) |
@@ -258,13 +258,28 @@ These are the two directions of the same operation, and it is worth knowing whic
 
 | Button | Order of work | Use when |
 |--------|---------------|----------|
-| **Add Region** | Draw the rectangle first, then get a row for it | You are marking up a label region by region |
-| **Add Field** | Get the row first, then draw its rectangle | You know the field you want and are placing it |
+| **Add Region** | Draw the rectangle first, then get a row for it | You are marking up a label region by region, and do **not** want it read yet |
+| **Add Field** | Get the row first, then draw its rectangle | You know the field you want, are placing it, and want its value read straight away |
 
-**Add Field** creates the row immediately and switches **Draw Region** on, highlighting it
-in orange and relabelling it with the new row's metadata key. The next rectangle you drag on
-the label is assigned to that row, which then behaves like any other region: **Scope: Drawn
-Regions -> Scan** reads its text, and **Save Template** stores its position.
+The other difference is what happens next: **Add Region** deliberately does *not* scan, which
+is what you want when laying out a template. **Add Field** decodes as soon as you finish
+drawing, because you named the field first and are asking for its value.
+
+**Add Field** creates the row immediately and switches drawing mode on **by itself**. An
+orange banner appears across the top of the label image naming the field it is waiting for.
+
+**Drag straight on the image - do not click Draw Region first.** It is already switched on,
+and clicking it is unnecessary.
+
+The rectangle you drag is assigned to that row and **read immediately** - you do not need to
+press Scan. The decoded value appears in the row's **Detected Text**, and a notification
+reports what was read. The region is decoded with the current **Decode As** setting, so set
+that before you draw if the field is a barcode.
+
+The whole gesture is one undo step: **Ctrl+Z** removes both the region and the text it read.
+
+Afterwards the row behaves like any other region - **Scope: Drawn Regions -> Scan** re-reads
+it, and **Save Template** stores its position.
 
 Press **Escape** (or click **Clear**) to keep the row without giving it a region. A row with
 no region is never scanned - type its value into the **Detected Text** column by hand and it
