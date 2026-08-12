@@ -273,20 +273,24 @@ public class OCREngine {
      *
      * <p>The LSTM decoder is a beam search that scores candidate character paths
      * against the language's dictionaries, so it prefers readings that look like real
-     * words. Slide labels are accession numbers, sample codes, dates and e-mail
-     * addresses -- none of them dictionary words -- so that bias rewrites correct
-     * character runs into wrong ones. It is what turns "histology@lji.org" into
-     * "histoloawalli.org": punc-dawg models "@" mid-token as implausible because
-     * English prose almost never does it, so the beam search walks around the "@"
-     * even when the classifier saw one.</p>
+     * words. Slide labels are accession numbers, sample codes and dates -- none of them
+     * dictionary words -- so dictionary correction has no legitimate role here.</p>
+     *
+     * <p>This is a safeguard, NOT a cure for misread labels. It was added on the theory
+     * that punc-dawg was what turned "histology@lji.org" into "histoloawalli.org", and
+     * measurement on Tesseract 5.3.4 refuted that: across a blur series the output was
+     * byte-identical with dictionaries on and off. The actual cause was
+     * {@link #applyAdaptiveThreshold(java.awt.image.BufferedImage)}, applied by the
+     * Enhance option, which hard-thresholds away the antialiasing the classifier needs.
+     * Do not advertise this switch as fixing that.</p>
      *
      * <p>The dictionaries are loaded during Tesseract's Init, which is why this
      * has to go through a config file rather than {@code setVariable}: Tess4J applies
      * {@code setVariable} entries with {@code TessBaseAPISetVariable} <i>after</i>
      * {@code TessBaseAPIInit1} has already loaded them, so setting them that way is a
      * silent no-op. Config files named at Init are read before the dictionaries load.
-     * This is the same mechanism as Tesseract's own bundled {@code tessconfigs/bazaar}
-     * config, which is nothing but {@code load_system_dawg F} / {@code load_freq_dawg F}.</p>
+     * This is the same mechanism as Tesseract's own bundled {@code configs/ambigs.train},
+     * which sets these very parameters the same way (verified against Tesseract 5.3.4).</p>
      *
      * @param literal true to disable the dictionaries
      */

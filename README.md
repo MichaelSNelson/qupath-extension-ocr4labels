@@ -469,14 +469,13 @@ Templates store field positions and types for batch processing:
 
 ---
 
-## Literal Text and the @ Symbol Problem
+## The @ Symbol Problem (and what actually causes it)
 
 ### The symptom
 
-OCR a label carrying `histology@lji.org` and Tesseract may return `histoloawalli.org`.
-The `@` has not merely been missed - it has been *replaced*, and the characters around it
-have been dragged along with it. Aligning the two strings shows the damage is local to the
-unwordlike part:
+OCR a label carrying `histology@lji.org` and the extension may return
+`histoloawalli.org`. The `@` has not merely been missed - it has been *replaced*, and the
+characters around it dragged along with it:
 
 ```
 h i s t o l o g y @ l j i . o r g     <- what the label says
@@ -486,67 +485,96 @@ h i s t o l o a w a l l i . o r g     <- what OCR returned
 
 `histolo` and `.org` survive; `gy@lj` does not.
 
-### Why it happens
+### What causes it: the Enhance option
 
-Tesseract's LSTM engine does not classify characters independently. It runs a beam search
-that scores each candidate character path against the language's dictionaries, and it
-prefers paths that look like plausible English. `eng.traineddata` ships several of these:
-a word list, a frequent-word list, a number pattern list, and - most relevant here - a
-**punctuation model** describing where punctuation legitimately falls in English text.
+**Measured on Tesseract 5.3.4**, rendering `histology@lji.org` and degrading it in a
+controlled way. `raw` is the image as-is; `enhanced` is after the extension's adaptive
+threshold, which is what the **Enhance** checkbox applies:
 
-An `@` in the middle of a token is something English prose essentially never does. So even
-when the character classifier saw the `@` perfectly well, the language model scores that
-path poorly and the beam search walks around it, emitting letters instead. The neighbouring
-characters get rewritten too, because the search optimizes the whole path rather than each
-character in isolation.
+| Blur | Enhance | Dictionary | Output |
+|------|---------|-----------|--------|
+| none | raw | on / off | `histology@lji.org` |
+| none | enhanced | on / off | `histology@lji.org` |
+| 1.0 | raw | on / off | `histology@lji.org` |
+| 1.0 | **enhanced** | on / off | `histology@Jji.org` |
+| 1.5 | raw | on / off | `histology@lji.org` |
+| 1.5 | **enhanced** | on / off | `histology@IJl.org` |
+| 2.0 | raw | on / off | `histology@lji.org` |
+| 2.0 | **enhanced** | on / off | `histologyGijl.org` |
 
-This is not an `@`-specific bug. The same mechanism corrupts underscores in sample codes,
-mixed letter/digit accession numbers, and anything else that is correct but not word-shaped.
-The `@` is simply the most conspicuous case, because it is both structurally distinctive
-and guaranteed to be non-dictionary.
+Two things fall out of this:
 
-Two other factors make `@` unusually fragile, and are worth ruling out separately:
+- **Enhance is the cause.** The raw image reads perfectly at every blur level tested. The
+  enhanced one degrades progressively, and in exactly the way real labels do: first the
+  thin letters (`lji` -> `Jji` -> `IJl`), then the `@` itself (`@` -> `G`).
+- **The dictionary is irrelevant here.** Every row is identical with dictionaries on and
+  off. See [Literal text](#literal-text-no-dictionary) below.
 
-- **It is the densest glyph in ASCII.** A small `a` inside an open ring, with a gap between
-  them roughly one stroke wide. At low resolution or slight defocus that gap closes, and what
-  remains - a blob with a single hole - is topologically indistinguishable from `a` or `o`.
-- **Enhance binarizes before Tesseract sees the image.** The **Enhance** option applies
-  adaptive thresholding, and a thin gap is the first thing a mean-threshold binarization
-  closes. If an `@` reads correctly with Enhance off and wrongly with it on, that is the
-  cause rather than the language model.
+The mechanism: **Enhance** applies an adaptive threshold that forces every pixel to pure
+black or pure white before Tesseract sees the image. That throws away the antialiasing the
+LSTM classifier relies on, and `@` is the glyph least able to survive it - it is the densest
+in ASCII, a small `a` inside an open ring separated by roughly one stroke width. A local-mean
+threshold closes that gap first, and what remains, a blob with one hole, is indistinguishable
+from `a`, `o` or `G`.
 
-### The fix
+Tesseract already performs its own (Otsu) binarization internally, and is better at it.
 
-**Literal text (no dictionary)** switches the language model off, so Tesseract reports what
-the character classifier actually saw. It is **on by default**, because slide labels are
-overwhelmingly accession numbers, sample codes, dates and e-mail addresses - none of them
-dictionary words - so the language model corrupts more than it repairs.
+### What to do
 
-Turn it **off** only if your labels carry ordinary words, such as handwritten tissue names
-or staining notes, where dictionary correction genuinely helps.
+**Untick Enhance and scan again.** If the fields are already in the table, set **Scope** to
+"Drawn Regions" and click **Rescan Regions** to re-read them all with the new setting.
 
-Under the hood this disables `load_system_dawg`, `load_freq_dawg`, `load_punc_dawg`,
-`load_number_dawg` and `load_bigram_dawg`. These are read while Tesseract initialises, so
-the extension passes them in a config file at init rather than through `setVariable`, which
-is applied afterwards and would be silently ignored. It is the same mechanism as Tesseract's
-own bundled `tessconfigs/bazaar` config.
+Enhance is advertised for faded labels, but it did not earn its keep even there. Rendering
+low-contrast grey-on-grey text, raw read correctly and enhanced was equal at best:
 
-In scripts, use `literal()` or `useDictionary()` on `OCRBuilder`, or `.literalText(boolean)`
-on `OCRConfiguration.builder()`. Literal is the default in both.
+| Case | Enhance | Output |
+|------|---------|--------|
+| good contrast | raw | `histology@lji.org` |
+| good contrast | **enhanced** | `histology@iji.org` |
+| faded | raw | `histology@lji.org` |
+| faded | enhanced | `histology@lji.org` |
+| very faded | raw | `histology@lji.org` |
+| very faded | enhanced | `histology@lji.org` |
+
+If Enhance is not helping your labels either, turn it off by default in
+**Settings -> Image Enhancement -> Enhance image contrast**.
+
+These figures come from synthetic renders, not from a real slide label. Treat them as a
+strong reason to try Enhance off, not as a guarantee.
 
 ### If the text is still wrong
 
-Literal mode stops the language model from rewriting correct readings. It cannot recover
-characters the classifier never resolved. When a glyph is genuinely lost to blur or
-resolution, the remaining tools are:
-
 - **Draw Region** around the difficult text and scan it alone with **Single Line** or
   **Single Word** mode, which avoids layout-analysis mistakes
-- Toggle **Enhance** off, in case binarization is closing thin gaps
 - **Vocabulary Matching** against a list of known valid values, which fixes the value from
   the outside rather than trying to read it better
-- A **barcode**, where the label carries one - note that in the example above the QR code
-  decoded `histology@lji.org` perfectly while OCR did not
+- A **barcode**, where the label carries one - in the example above the QR code decoded
+  `histology@lji.org` perfectly while OCR did not
+
+### Literal text (no dictionary)
+
+Tesseract's LSTM decoder scores candidate character paths against the language dictionaries
+and prefers readings that look like real words. Slide labels are accession numbers, sample
+codes and dates, none of which are dictionary words, so **Literal text (no dictionary)** is
+on by default: it disables `load_system_dawg`, `load_freq_dawg`, `load_punc_dawg`,
+`load_number_dawg` and `load_bigram_dawg` so Tesseract reports what the classifier saw.
+
+**It is a safeguard, not a fix for the problem above.** In the measurements on this page it
+made no difference whatsoever, and it was originally added here on the mistaken assumption
+that it would. It is kept because dictionary correction has no legitimate role on
+identifier-style text, but do not expect it to rescue a misread label.
+
+Turn it off in **Settings -> Text Detection Settings** if your labels carry ordinary words,
+such as handwritten tissue names.
+
+Implementation note: these are init-time parameters, read while Tesseract loads the
+dictionaries, so the extension passes them in a config file at init rather than through
+`setVariable` - Tess4J applies `setVariable` entries after `TessBaseAPIInit1`, which would
+make it a silent no-op. Tesseract's own bundled `configs/ambigs.train` sets the same
+parameters the same way.
+
+In scripts, use `literal()` or `useDictionary()` on `OCRBuilder`, or `.literalText(boolean)`
+on `OCRConfiguration.builder()`. Literal is the default in both.
 
 ---
 

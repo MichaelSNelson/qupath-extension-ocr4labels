@@ -209,11 +209,14 @@ public class OCRConfiguration {
      *
      * <p>Tesseract's LSTM decoder is a beam search that scores candidate character
      * paths against the language's dictionaries, so it prefers readings that look
-     * like real words. Slide labels are mostly accession numbers, sample codes,
-     * dates and e-mail addresses, none of which are dictionary words, so that bias
-     * corrupts more text than it repairs. When this is enabled the word, frequent-word
-     * and punctuation dictionaries are all switched off and Tesseract reports what the
-     * character classifier actually saw.</p>
+     * like real words. Slide labels are mostly accession numbers, sample codes and
+     * dates, none of which are dictionary words, so dictionary correction has no
+     * legitimate role. When this is enabled the word, frequent-word, punctuation,
+     * number and bigram dictionaries are all switched off.</p>
+     *
+     * <p>Treat this as a safeguard rather than an accuracy fix: in controlled tests it
+     * made no measurable difference to misread label text. See
+     * {@code OCREngine.applyLiteralTextMode} for what did.</p>
      *
      * @return true if the language dictionaries should be disabled
      */
