@@ -430,9 +430,11 @@ public class OCRSettingsDialog {
         CheckBox enhanceContrastCb = new CheckBox("Enhance image contrast");
         enhanceContrastCb.setSelected(OCRPreferences.isEnhanceContrast());
         enhanceContrastCb.setTooltip(new Tooltip(
-                "Apply image processing to improve text visibility.\n\n" +
-                "Helpful for faded labels, labels with colored backgrounds,\n" +
-                "or labels photographed in poor lighting conditions."));
+                "Hard-threshold the image to pure black and white before OCR.\n\n" +
+                "Off by default. In testing it made text worse at every blur level and\n" +
+                "never beat the untouched image, including on the faded labels it was\n" +
+                "meant to help. Tesseract already thresholds internally.\n\n" +
+                "Leave off unless a specific label reads better with it."));
         enhanceContrastCb.selectedProperty().addListener((obs, old, newVal) ->
                 OCRPreferences.setEnhanceContrast(newVal));
 

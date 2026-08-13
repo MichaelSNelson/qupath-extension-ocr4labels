@@ -536,13 +536,23 @@ low-contrast grey-on-grey text, raw read correctly and enhanced was equal at bes
 | very faded | raw | `histology@lji.org` |
 | very faded | enhanced | `histology@lji.org` |
 
-If Enhance is not helping your labels either, turn it off by default in
-**Settings -> Image Enhancement -> Enhance image contrast**.
+**Enhance is off by default as of 0.4.2**, for this reason. If you are upgrading, the
+dialog checkbox now follows **Settings -> Image Enhancement -> Enhance image contrast**;
+before 0.4.2 it was hardcoded on and ignored that setting entirely, so the preference
+appeared to do nothing.
+
+Confirmed on a real slide label: with Enhance on, `histology@lji.org` read as
+`histoloawalli.org`; with it off, the `@` came back. The rest of that particular label is
+still misread (`histoloagwa@lii.ora`) because the image itself is marginal - see below.
 
 These figures come from synthetic renders, not from a real slide label. Treat them as a
 strong reason to try Enhance off, not as a guarantee.
 
 ### If the text is still wrong
+
+Turning Enhance off recovers characters it was destroying, but it cannot recover detail the
+image never had. If a label is simply too small, blurred or low-contrast, the remaining
+errors are classifier limits, and the options are:
 
 - **Draw Region** around the difficult text and scan it alone with **Single Line** or
   **Single Word** mode, which avoids layout-analysis mistakes

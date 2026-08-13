@@ -278,7 +278,7 @@ public class OCRConfiguration {
         private double minConfidence = 0.5;
         private boolean enablePreprocessing = true;
         private boolean autoRotate = true;
-        private boolean enhanceContrast = true;
+        private boolean enhanceContrast = false; // see OCRPreferences.DEFAULT_ENHANCE_CONTRAST
         private boolean detectOrientation = true;
         // Inspired by zindy/qupath-extension-ocr - region-based OCR and character whitelist support
         private Rectangle cropRegion = null;

@@ -463,11 +463,17 @@ public class OCRDialog {
                 "Affects both text and barcode scanning."));
 
         thresholdCheckBox = new CheckBox("Enhance");
-        thresholdCheckBox.setSelected(true);
+        // Follow the preference. This used to be hardcoded true, which silently
+        // overrode the Settings option on every scan.
+        thresholdCheckBox.setSelected(OCRPreferences.isEnhanceContrast());
         thresholdCheckBox.setTooltip(new Tooltip(
-                "Improve image contrast before scanning.\n\n" +
-                "Helps with faded labels or poor lighting.\n" +
-                "Usually best to leave enabled."));
+                "Hard-threshold the image to pure black and white before scanning.\n\n" +
+                "OFF by default, and usually best left off. It discards the smooth edges\n" +
+                "Tesseract's classifier relies on, and dense glyphs are the first to go -\n" +
+                "it is what turns 'histology@lji.org' into 'histoloawalli.org'. Tesseract\n" +
+                "already does its own thresholding, including on faded labels.\n\n" +
+                "Worth a try only if a label is genuinely unreadable without it. Compare\n" +
+                "both ways: toggle it, then Scope 'Drawn Regions' -> Rescan Regions."));
 
         // Label source configuration button
         Button labelSourceBtn = new Button("Label Source...");
@@ -1772,7 +1778,12 @@ public class OCRDialog {
             }
 
             RegionType type = entry.getRegionType();
-            double dilation = (type == RegionType.BARCODE || type == RegionType.AUTO) ? 0.25 : 0.0;
+            // Text regions need margin too. A detection box hugs the ink, and decoding a
+            // crop taken exactly on that box measurably damages the result: on a test
+            // render, the exact ink box read "nistology@iji.org" where the same crop with
+            // 8px of padding read "histology@lji.org". Barcodes need more, because ZXing
+            // requires a quiet zone.
+            double dilation = (type == RegionType.BARCODE || type == RegionType.AUTO) ? 0.25 : 0.15;
             int[] box = dilateAndClamp(bbox, dilation);
             if (box == null) {
                 logger.warn("Skipping rescan of field '{}': region is outside the image",
@@ -1792,6 +1803,10 @@ public class OCRDialog {
             if (invert) {
                 regionImage = invertImage(regionImage);
             }
+
+            // Dilation cannot help a region that sits against the edge of the label, where
+            // clamping leaves no margin at all. Add a quiet border so every crop has one.
+            regionImage = addQuietBorder(regionImage, invert);
 
             tasks.add(new RescanTask(i, regionImage, entry.getMetadataKey(), box, type, bbox));
         }
@@ -1813,12 +1828,12 @@ public class OCRDialog {
 
             for (RescanTask task : tasks) {
                 try {
-                    java.awt.Rectangle region =
-                            new java.awt.Rectangle(0, 0, task.box[2], task.box[3]);
-
+                    // null region = decode the whole image we hand over. The image has
+                    // already been cropped AND given a quiet border, so passing a rectangle
+                    // sized to the original box would crop that border straight back off.
                     UnifiedDecoderService.DecodedResult result =
                             OCRController.getInstance().decodeRegion(
-                                    task.regionImage, region, task.regionType, config);
+                                    task.regionImage, null, task.regionType, config);
 
                     // decodeRegion always returns a result; a failed decode comes back
                     // as DecodedResult.error(...) rather than null.
@@ -1924,6 +1939,33 @@ public class OCRDialog {
             });
             return null;
         });
+    }
+
+    /**
+     * Surrounds a cropped region with a plain border, giving the decoder the quiet zone
+     * it expects. Tesseract and ZXing both read a crop that runs right to the glyph or
+     * barcode edge noticeably worse than the same crop with margin around it.
+     *
+     * @param region   the cropped region
+     * @param inverted true if the region has been colour-inverted, so the border is
+     *                 drawn black to match the new background rather than white
+     * @return a new image with the border applied
+     */
+    private BufferedImage addQuietBorder(BufferedImage region, boolean inverted) {
+        int pad = Math.max(8, Math.round(region.getHeight() * 0.2f));
+        BufferedImage padded = new BufferedImage(
+                region.getWidth() + pad * 2, region.getHeight() + pad * 2,
+                BufferedImage.TYPE_INT_RGB);
+
+        java.awt.Graphics2D g = padded.createGraphics();
+        try {
+            g.setColor(inverted ? java.awt.Color.BLACK : java.awt.Color.WHITE);
+            g.fillRect(0, 0, padded.getWidth(), padded.getHeight());
+            g.drawImage(region, pad, pad, null);
+        } finally {
+            g.dispose();
+        }
+        return padded;
     }
 
     /**
@@ -3501,6 +3543,10 @@ public class OCRDialog {
                 regionImage = invertImage(regionImage);
             }
 
+            // Same quiet zone the rescan path applies - a crop that runs to the glyph
+            // edge decodes measurably worse than one with margin around it.
+            regionImage = addQuietBorder(regionImage, invert);
+
             tasks.add(new TemplateRegionTask(regionImage, mapping.getMetadataKey(),
                     box, mapping.getRegionType()));
         }
@@ -3512,12 +3558,11 @@ public class OCRDialog {
 
             for (TemplateRegionTask task : tasks) {
                 try {
-                    java.awt.Rectangle region = new java.awt.Rectangle(
-                            0, 0, task.box[2], task.box[3]);
-
+                    // null region: the image is already cropped and bordered, so a
+                    // rectangle sized to the original box would remove that border again.
                     UnifiedDecoderService.DecodedResult result =
                             OCRController.getInstance().decodeRegion(
-                                    task.regionImage, region, task.regionType, config);
+                                    task.regionImage, null, task.regionType, config);
 
                     BoundingBox bbox = new BoundingBox(
                             task.box[0], task.box[1], task.box[2], task.box[3]);

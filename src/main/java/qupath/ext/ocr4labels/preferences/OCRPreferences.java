@@ -24,7 +24,10 @@ public class OCRPreferences {
     private static final String DEFAULT_TESSDATA_PATH = "";
     private static final double DEFAULT_MIN_CONFIDENCE = 0.5;
     private static final boolean DEFAULT_AUTO_ROTATE = true;
-    private static final boolean DEFAULT_ENHANCE_CONTRAST = true;
+    // Off by default: measured on Tesseract 5.3.4, the adaptive threshold degraded text
+    // at every blur level tested and never beat the raw image, including on the faded
+    // labels it was meant for. See OCREngine.applyAdaptiveThreshold.
+    private static final boolean DEFAULT_ENHANCE_CONTRAST = false;
     private static final boolean DEFAULT_DETECT_ORIENTATION = true;
     private static final int DEFAULT_PAGE_SEG_MODE = 11; // PSM_SPARSE_TEXT (best for labels)
     private static final String DEFAULT_METADATA_PREFIX = "OCR_";
