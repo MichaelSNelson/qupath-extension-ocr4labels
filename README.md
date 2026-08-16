@@ -543,16 +543,38 @@ appeared to do nothing.
 
 Confirmed on a real slide label: with Enhance on, `histology@lji.org` read as
 `histoloawalli.org`; with it off, the `@` came back. The rest of that particular label is
-still misread (`histoloagwa@lii.ora`) because the image itself is marginal - see below.
+still misread (`histoloagwa@lii.ora`) for an unrelated reason - the label was printed with
+its descenders cut off, which no setting can undo. See the next section.
 
 These figures come from synthetic renders, not from a real slide label. Treat them as a
 strong reason to try Enhance off, not as a guarantee.
 
-### If the text is still wrong
+### If the text is still wrong: check for clipped descenders
 
 Turning Enhance off recovers characters it was destroying, but it cannot recover detail the
-image never had. If a label is simply too small, blurred or low-contrast, the remaining
-errors are classifier limits, and the options are:
+image never had. Before blaming the scan, **zoom in on the label and look at the bottom of
+the letters.** A common failure is that the label was *printed* with its text box too tight,
+so everything below the baseline is cut off. The tell is a consistent pattern of confusions
+rather than random noise:
+
+| Printed | Reads as | Why |
+|---------|----------|-----|
+| `g` | `a` | descender loop gone, leaving a closed bowl |
+| `y` | `v` | descender tail gone, leaving a wedge |
+| `j` | `i` / `l` | descender gone |
+| `p`, `q` | `o` | descender gone |
+
+This is what the `histology@lji.org` label above turned out to be. Reproduced by rendering
+the same string and clipping the descenders, Tesseract returned `nNIStolIoOavalil.ora` -
+matching the real label's `.ora` ending and its `g` -> `a` substitutions.
+
+**No preprocessing option can fix this**, because the pixels do not exist in the source. The
+practical responses are to fix the label template at the printer, to rely on the barcode if
+the label carries one, or to correct the value by hand - the **Text** column in Detected
+Fields is editable, and edits are covered by **Undo**.
+
+If instead the label is simply too small, blurred or low-contrast, the remaining errors are
+classifier limits, and the options are:
 
 - **Draw Region** around the difficult text and scan it alone with **Single Line** or
   **Single Word** mode, which avoids layout-analysis mistakes
