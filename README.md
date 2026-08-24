@@ -179,7 +179,7 @@ Region types are color-coded on the overlay:
 | **Mode** | Page segmentation mode - controls how Tesseract analyzes the image layout |
 | **Min Conf** | Minimum confidence threshold (0-100%) - text below this is filtered out |
 | **Invert** | Inverts image colors - use for labels with light text on dark backgrounds |
-| **Enhance** | Improves image contrast before OCR - recommended for faded labels |
+| **Enhance** | Adaptive-threshold contrast boost. **Off by default, and best left off** - it hard-binarizes the image before Tesseract sees it and measurably *degrades* text, including on the faded labels it was once recommended for. See [The @ Symbol Problem](#what-causes-it-the-enhance-option) |
 
 ### Scan Scopes
 
